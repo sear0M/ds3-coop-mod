@@ -53,6 +53,22 @@ Com o menu aberto o mouse fica livre: o jogo para de prender o cursor no meio da
 
 Os itens só chegam quando um personagem está carregado (não funciona na tela de título).
 
+## Vídeo: FPS sem trava e tela cheia sem borda
+
+O mod tira a trava de 60 FPS e tem um modo de tela cheia sem borda. As opções ficam em `ds3coopmod.ini`, na pasta do jogo. Cada jogador tem o seu, e o launcher não mexe nele. Para abrir, use o link **Opções de vídeo** do launcher.
+
+```ini
+[Video]
+fps_limit = 0     ; 0 = taxa do monitor (ex.: 144 num monitor de 144 Hz), 60 = original, ou um valor (até 360)
+borderless = 1    ; tela cheia sem borda
+fix_sprint = 1    ; corrige a corrida mais lenta acima de ~82 FPS
+```
+
+- **Tela cheia sem borda:** coloque o jogo em **Janela** nas opções de vídeo do DS3, de preferência com a resolução do seu monitor. O mod tira a borda e estica a janela para o monitor inteiro, e o Alt+Tab fica instantâneo.
+- **FPS:** o DS3 tem um limitador de FPS de depuração escondido. O mod só liga ele com o valor escolhido, sem alterar o código do jogo. Acima de ~82 FPS o personagem corria mais devagar, e o `fix_sprint` corrige isso.
+- Mudou alguma coisa? Feche e abra o jogo de novo.
+- O jogo foi feito para 60 FPS. Se notar alguma física estranha num FPS muito alto, teste 120 ou volte para 60.
+
 ## Configuração do Seamless Co-op
 
 Arquivo `SeamlessCoop\ds3sc_settings.ini`, na pasta do jogo:
@@ -133,6 +149,7 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 | `src/hooks.cpp` | Hook em `IDXGISwapChain::Present` para desenhar o menu com Dear ImGui, hook na janela para o Insert e o mouse, hooks em `SetCursorPos`/`ClipCursor` para o jogo não prender o cursor, e hook no DirectInput para o jogo não receber teclado e mouse com o menu aberto (o movimento do mouse vai para o cursor do menu). |
 | `src/game.cpp` | Endereços do jogo 1.15.2, leitura das tabelas de itens (params) e a chamada da função do jogo que entrega itens. Toda leitura de memória é conferida antes, e o mod se desliga se o exe não for a versão 1.15.2. |
 | `src/menu.cpp` | Telas de senha e de itens. |
+| `src/video.cpp` | FPS sem trava (limitador de depuração do `SprjFlipper`), correção da corrida e tela cheia sem borda (hooks em `SetWindowLongW`/`SetWindowLongPtrW`/`SetWindowPos`). Lê o `ds3coopmod.ini`. |
 | `src/items_data.inc` | Lista de itens gerada por `tools/gen_items.ps1` a partir de `data/item_ids.json`. |
 | `launcher/main.cpp` | O launcher: lê o `manifest.txt` da última release, compara os hashes, baixa o que mudou (inclusive ele mesmo), aplica o `seamless_overrides.ini` e abre o jogo. A janela é desenhada com GDI+ nas cores do Dark Souls III. |
 | `tools/make_icon.ps1` | Gera o ícone do launcher (`launcher/icon.ico`). |
@@ -146,6 +163,7 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 ## Créditos e licença
 
 - Endereços do jogo e lista de itens: [veeenu/darksoulsiii-practice-tool](https://github.com/veeenu/darksoulsiii-practice-tool) (AGPL-3.0).
+- Técnica do FPS sem trava, da correção da corrida e do modo sem borda: [0dm/DS3DebugFPS](https://github.com/0dm/ds3debugfps) (Apache-2.0), reimplementada em `src/video.cpp`.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT) e [MinHook](https://github.com/TsudaKageyu/minhook) (BSD-2-Clause), em `third_party/` com as licenças originais.
 - Seamless Co-op é do LukeYui e não faz parte deste repositório.
 

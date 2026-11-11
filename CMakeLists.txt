@@ -40,6 +40,7 @@ add_library(dinput8 SHARED
     src/log.cpp
     src/menu.cpp
     src/password.cpp
+    src/video.cpp
     src/exports.def)
 set_target_properties(dinput8 PROPERTIES PREFIX "" OUTPUT_NAME "dinput8")
 target_compile_definitions(dinput8 PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

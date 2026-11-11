@@ -18,6 +18,7 @@
 #include "imgui_impl_win32.h"
 #include "log.h"
 #include "menu.h"
+#include "video.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -161,9 +162,15 @@ void ReleaseRtv() {
     }
 }
 
+UINT g_backBufferWidth = 0, g_backBufferHeight = 0;
+
 bool CreateRtv(IDXGISwapChain* swapChain) {
     ID3D11Texture2D* backBuffer = nullptr;
     if (FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))) || !backBuffer) return false;
+    D3D11_TEXTURE2D_DESC bbDesc{};
+    backBuffer->GetDesc(&bbDesc);
+    g_backBufferWidth = bbDesc.Width;
+    g_backBufferHeight = bbDesc.Height;
     HRESULT hr = g_device->CreateRenderTargetView(backBuffer, nullptr, &g_rtv);
     if (FAILED(hr)) {
         // Typeless back buffers need an explicit format.
@@ -186,6 +193,7 @@ bool IsInputMessage(UINT msg) {
 }
 
 LRESULT CALLBACK WndProcHook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (video::OnWindowMessage(hwnd, msg, wParam, lParam)) return 0;
     const bool keyDown = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     const bool firstPress = !(lParam & (1 << 30));
     if (keyDown && firstPress && wParam == menu::kToggleKey) {
@@ -284,6 +292,24 @@ void RenderMenu(IDXGISwapChain* swapChain) {
     menu::Render();
     ImGui::Render();
 
+    // ImGui works in window (client) coordinates. In borderless mode the game's back buffer can be
+    // smaller than the window (DXGI stretches it), so scale the finished geometry to the buffer.
+    ImDrawData* drawData = ImGui::GetDrawData();
+    RECT client{};
+    GetClientRect(g_window, &client);
+    const float cw = static_cast<float>(client.right - client.left), ch = static_cast<float>(client.bottom - client.top);
+    if (g_backBufferWidth && g_backBufferHeight && cw > 0 && ch > 0 &&
+        (static_cast<UINT>(cw) != g_backBufferWidth || static_cast<UINT>(ch) != g_backBufferHeight)) {
+        const ImVec2 scale(g_backBufferWidth / cw, g_backBufferHeight / ch);
+        for (int n = 0; n < drawData->CmdListsCount; ++n)
+            for (ImDrawVert& v : drawData->CmdLists[n]->VtxBuffer) {
+                v.pos.x *= scale.x;
+                v.pos.y *= scale.y;
+            }
+        drawData->ScaleClipRects(scale);
+        drawData->DisplaySize = ImVec2(static_cast<float>(g_backBufferWidth), static_cast<float>(g_backBufferHeight));
+    }
+
     ID3D11RenderTargetView* oldRtv = nullptr;
     ID3D11DepthStencilView* oldDsv = nullptr;
     g_context->OMGetRenderTargets(1, &oldRtv, &oldDsv);
@@ -304,8 +330,10 @@ HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* swapChain, UINT syncInterv
         if (g_imguiReady) {
             DXGI_SWAP_CHAIN_DESC desc{};
             // Only draw on the game's own window (ignore other swap chains, e.g. overlays).
-            if (swapChain == g_swapChain || (SUCCEEDED(swapChain->GetDesc(&desc)) && desc.OutputWindow == g_window))
+            if (swapChain == g_swapChain || (SUCCEEDED(swapChain->GetDesc(&desc)) && desc.OutputWindow == g_window)) {
+                video::OnPresent(swapChain);
                 RenderMenu(swapChain);
+            }
         }
     }
     return o_Present(swapChain, syncInterval, flags);

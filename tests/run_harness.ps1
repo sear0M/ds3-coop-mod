@@ -1,7 +1,9 @@
 # Builds the mod and the test harness, runs the harness with the mod loaded and converts the
 # screenshots to PNG in build\harness\.
 #   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Password "<senha>"
-param([string]$Password = '')
+#   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Borderless
+#     (the test window covers the screen for ~5 seconds)
+param([string]$Password = '', [switch]$Borderless)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -18,9 +20,14 @@ Remove-Item "$out\*" -Force -ErrorAction SilentlyContinue
 g++ -std=c++17 -O1 tests\harness.cpp -o "$out\DarkSoulsIII.exe" -ld3d11 -ldinput8 -static
 if ($LASTEXITCODE -ne 0) { throw 'harness build failed' }
 Copy-Item build\dinput8.dll $out
+# Mod settings for the run: borderless only when asked (it covers the whole screen).
+$b = if ($Borderless) { 1 } else { 0 }
+Set-Content "$out\ds3coopmod.ini" "[Video]`r`nfps_limit = 0`r`nborderless = $b`r`nfix_sprint = 1" -Encoding ascii
 
 Push-Location $out
-try { & .\DarkSoulsIII.exe $Password } finally { Pop-Location }
+try {
+    if ($Borderless) { & .\DarkSoulsIII.exe $Password borderless } else { & .\DarkSoulsIII.exe $Password }
+} finally { Pop-Location }
 
 Add-Type -AssemblyName System.Drawing
 Get-ChildItem "$out\*.bmp" | ForEach-Object {

@@ -762,9 +762,30 @@ const Color kError(255, 230, 104, 70);
 
 constexpr float kWidth = 620.0f, kHeight = 350.0f;  // logical size of the client area
 
-enum Hit { HitNone = -1, HitUpdate = 0, HitPlay = 1, HitPassword = 2, HitFolder = 3 };
+enum Hit { HitNone = -1, HitUpdate = 0, HitPlay = 1, HitPassword = 2, HitFolder = 3, HitVideo = 4 };
 const RectF kButtonRects[3] = {{24, 236, 166, 52}, {206, 236, 208, 52}, {430, 236, 166, 52}};
-const RectF kFolderLink(200, 306, 220, 22);
+const RectF kVideoLink(150, 306, 150, 22);
+const RectF kFolderLink(320, 306, 170, 22);
+
+// Same defaults the mod writes on its first run (src/video.cpp).
+constexpr const char* kDefaultVideoIni =
+    "; DS3 Coop Mod - opcoes de video. Cada jogador tem o seu arquivo, o launcher nao mexe aqui.\r\n"
+    "; Depois de mudar, feche e abra o jogo de novo.\r\n"
+    "\r\n"
+    "[Video]\r\n"
+    "; Limite de FPS.\r\n"
+    ";   0   = usa a taxa de atualizacao do monitor (ex.: 144 num monitor de 144 Hz)\r\n"
+    ";   60  = igual ao jogo original\r\n"
+    ";   120, 144, 165, 240... = o valor que voce escolher (maximo 360)\r\n"
+    "fps_limit = 0\r\n"
+    "\r\n"
+    "; Tela cheia sem borda: 1 = ligado, 0 = desligado.\r\n"
+    "; Para funcionar, deixe o jogo em modo \"Janela\" nas opcoes de video do jogo,\r\n"
+    "; de preferencia com a resolucao do seu monitor.\r\n"
+    "borderless = 1\r\n"
+    "\r\n"
+    "; Corrige a corrida mais lenta acima de ~82 FPS: 1 = ligado, 0 = desligado.\r\n"
+    "fix_sprint = 1\r\n";
 
 enum class StatusKind { Normal, Success, Error };
 std::wstring g_statusText = L"Iniciando...";
@@ -851,7 +872,7 @@ void DrawDivider(Graphics& g, float y, float x0, float x1) {
 }
 
 bool HitEnabled(int hit) {
-    if (hit == HitPassword) return true;
+    if (hit == HitPassword || hit == HitVideo) return true;
     return !g_busy;
 }
 
@@ -1009,9 +1030,13 @@ void Paint(HDC target) {
         DrawButton(g, HitPlay, L"Iniciar jogo", true);
         DrawButton(g, HitPassword, L"Senha do coop", false);
 
-        const bool linkEnabled = HitEnabled(HitFolder);
-        SolidBrush link(linkEnabled && g_hover == HitFolder ? kGold : Color(255, 112, 104, 90));
-        DrawCentered(g, L"Trocar pasta do jogo", *g_fonts.small, Scaled(kFolderLink), link);
+        const Color linkIdle(255, 112, 104, 90);
+        SolidBrush videoLink(g_hover == HitVideo ? kGold : linkIdle);
+        DrawCentered(g, L"Opções de vídeo", *g_fonts.small, Scaled(kVideoLink), videoLink);
+        SolidBrush dot(Color(255, 80, 72, 60));
+        DrawCentered(g, L"•", *g_fonts.small, Scaled(RectF(300, 306, 20, 22)), dot);
+        SolidBrush folderLink(HitEnabled(HitFolder) && g_hover == HitFolder ? kGold : linkIdle);
+        DrawCentered(g, L"Trocar pasta do jogo", *g_fonts.small, Scaled(kFolderLink), folderLink);
     }
     BitBlt(target, 0, 0, w, h, mem, 0, 0, SRCCOPY);
     SelectObject(mem, oldBmp);
@@ -1034,6 +1059,7 @@ int HitTest(LPARAM lParam) {
     for (int i = 0; i < 3; ++i)
         if (kButtonRects[i].Contains(p)) return i;
     if (kFolderLink.Contains(p)) return HitFolder;
+    if (kVideoLink.Contains(p)) return HitVideo;
     return HitNone;
 }
 
@@ -1095,12 +1121,24 @@ void OpenPasswordFile() {
               StatusKind::Normal);
 }
 
+void OpenVideoSettings() {
+    if (!IsGameDir(g_opt.gameDir)) return;
+    const std::wstring ini = Join(g_opt.gameDir, L"ds3coopmod.ini");
+    if (!FileExists(ini)) WriteFileBytes(ini, kDefaultVideoIni);
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(g_wnd, L"open", L"notepad.exe", Quote(ini).c_str(), nullptr,
+                                                SW_SHOWNORMAL)) <= 32)
+        ShellExecuteW(g_wnd, L"open", ini.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    SetStatus(L"Abri o ds3coopmod.ini: limite de FPS e tela cheia sem borda. Vale quando o jogo abrir de novo.",
+              StatusKind::Normal);
+}
+
 void OnClick(int hit) {
     if (!HitEnabled(hit)) return;
     switch (hit) {
         case HitUpdate: StartUpdate(false); break;
         case HitPlay: StartUpdate(true); break;
         case HitPassword: OpenPasswordFile(); break;
+        case HitVideo: OpenVideoSettings(); break;
         case HitFolder:
             if (ResolveGameDir(true)) StartUpdate(false);
             break;

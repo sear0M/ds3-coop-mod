@@ -8,6 +8,7 @@
 #include "game.h"
 #include "hooks.h"
 #include "log.h"
+#include "video.h"
 
 namespace {
 
@@ -65,10 +66,13 @@ DWORD WINAPI InitThread(LPVOID) {
     logx::Init(ModuleDir(g_self) + L"\\ds3coopmod.log");
     LOG("DS3 Coop Mod starting");
     game::Init();
+    video::LoadConfig(ModuleDir(g_self));
     HWND window = WaitForGameWindow(120000);
     LOG("Game window: %p", reinterpret_cast<void*>(window));
     Sleep(1000);
     if (!hooks::InstallRenderHooks()) LOG("Menu disabled: render hooks failed");
+    // Borderless works on any window; the FPS/sprint patches are only verified on 1.15.2.
+    video::Start(window, game::VersionOk());
     return 0;
 }
 

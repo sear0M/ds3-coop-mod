@@ -144,7 +144,23 @@ int main(int argc, char** argv) {
     back->Release();
 
     static std::string s_password = password;
-    const Step steps[] = {
+    // "borderless" mode: the mod should turn this window into a borderless window covering the
+    // monitor while the back buffer stays 1280x720; the menu must still be centered and sized right.
+    const bool borderlessTest = argc > 2 && std::string(argv[2]) == "borderless";
+    const Step borderlessSteps[] = {
+        {4.2, [](HWND h) {
+             RECT r{};
+             GetWindowRect(h, &r);
+             const LONG style = GetWindowLongW(h, GWL_STYLE);
+             std::printf("window style=0x%08lX caption=%d rect=%ld,%ld %ldx%ld screen=%dx%d\n", style,
+                         (style & WS_CAPTION) == WS_CAPTION ? 1 : 0, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                         GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+         }},
+        {4.3, [](HWND h) { Key(h, VK_INSERT); }},
+        {4.9, [](HWND) { SaveBackBuffer("b_senha.bmp"); }},
+        {5.1, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
+    };
+    const Step menuSteps[] = {
         {4.0, [](HWND h) { Key(h, VK_INSERT); }},
         {4.6, [](HWND) { SaveBackBuffer("1_senha.bmp"); }},
         {4.8, [](HWND h) { Type(h, "senha-errada"); Key(h, VK_RETURN); }},
@@ -163,6 +179,8 @@ int main(int argc, char** argv) {
         {9.7, [](HWND) { SaveBackBuffer("7_fechado.bmp"); }},
         {9.9, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
+    const Step* steps = borderlessTest ? borderlessSteps : menuSteps;
+    const size_t stepCount = borderlessTest ? sizeof(borderlessSteps) / sizeof(Step) : sizeof(menuSteps) / sizeof(Step);
     size_t next = 0;
 
     const ULONGLONG start = GetTickCount64();
@@ -181,7 +199,7 @@ int main(int argc, char** argv) {
         g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
         g_context->ClearRenderTargetView(g_rtv, color);
         g_swapChain->Present(1, 0);
-        while (next < sizeof(steps) / sizeof(steps[0]) && t >= steps[next].at) steps[next++].run(hwnd);
+        while (next < stepCount && t >= steps[next].at) steps[next++].run(hwnd);
         if (t > 12.0) break;
     }
     std::printf("done\n");
