@@ -175,9 +175,13 @@ int main(int argc, char** argv) {
         {8.0, [](HWND h) { Click(h, 290, 97); }},  // search box
         {8.3, [](HWND h) { Type(h, "moon"); }},
         {8.9, [](HWND) { SaveBackBuffer("6_busca.bmp"); }},
-        {9.1, [](HWND h) { Key(h, VK_INSERT); }},
-        {9.7, [](HWND) { SaveBackBuffer("7_fechado.bmp"); }},
-        {9.9, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
+        {9.1, [](HWND h) { Click(h, 1078, 641); }},  // "Sair para o menu"
+        {9.7, [](HWND) { SaveBackBuffer("7_sair_confirmar.bmp"); }},
+        {9.9, [](HWND h) { Click(h, 500, 411); }},  // "Sair" (refused: not the real game)
+        {10.5, [](HWND) { SaveBackBuffer("8_sair_recusado.bmp"); }},
+        {10.7, [](HWND h) { Key(h, VK_INSERT); }},
+        {11.3, [](HWND) { SaveBackBuffer("9_fechado.bmp"); }},
+        {11.5, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
     const Step* steps = borderlessTest ? borderlessSteps : menuSteps;
     const size_t stepCount = borderlessTest ? sizeof(borderlessSteps) / sizeof(Step) : sizeof(menuSteps) / sizeof(Step);
@@ -200,7 +204,7 @@ int main(int argc, char** argv) {
         g_context->ClearRenderTargetView(g_rtv, color);
         g_swapChain->Present(1, 0);
         while (next < stepCount && t >= steps[next].at) steps[next++].run(hwnd);
-        if (t > 12.0) break;
+        if (t > 14.0) break;
     }
     std::printf("done\n");
     return 0;

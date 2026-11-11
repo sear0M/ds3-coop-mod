@@ -30,4 +30,8 @@ int MaxUpgrade(uint32_t baseWeaponId, uint32_t infusionOffset);
 // function used is the same one that hands you items picked up from the ground.
 bool GiveItem(uint32_t itemId, uint32_t quantity, std::string& error);
 
+// Goes back to the title screen, the same as "Quit Game" in the game's own menu. Used to reset
+// an area when Seamless Co-op leaves a boss stuck.
+bool QuitToMenu(std::string& error);
+
 }  // namespace game

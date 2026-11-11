@@ -37,6 +37,11 @@ int g_infusion = 0;
 std::string g_status = "Clique em um item para colocá-lo no seu inventário.";
 bool g_statusError = false;
 
+// "Sair para o menu" error shown on the password screen (the item window uses g_status).
+std::string g_quitError;
+constexpr const char* kQuitPopup = "Sair para o menu?";
+constexpr const char* kQuitLabel = "Sair para o menu";
+
 struct Infusion {
     const char* name;
     uint32_t offset;
@@ -125,6 +130,47 @@ void GiveSet(const items::Group& set) {
         SetStatus("Adicionado: set " + set.name + " (" + std::to_string(given) + " peças)", false);
     else
         SetStatus(error, true);
+}
+
+// Button that asks to go back to the title screen. Seamless Co-op sometimes leaves a boss stuck
+// (no health bar, fight never starts) after everyone dies to the same attack; reloading the
+// area by quitting to the menu resets it.
+void QuitButton(float width) {
+    if (ImGui::Button(kQuitLabel, ImVec2(width, 0.0f))) ImGui::OpenPopup(kQuitPopup);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Volta para a tela de título, igual a \"Sair do jogo\" no menu do DS3.\n"
+                          "Use quando um boss travar sem barra de vida.");
+}
+
+// Confirmation for QuitButton. Returns 1 when the game is quitting, -1 on error (in error),
+// 0 otherwise.
+int QuitPopup(std::string& error) {
+    int result = 0;
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal(kQuitPopup, nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+        ImGui::TextUnformatted("Voltar para a tela de título? É o mesmo que \"Sair do jogo\" no menu do DS3, "
+                               "o progresso fica salvo.");
+        ImGui::Spacing();
+        ImGui::TextColored(kDim,
+                           "Boss travado sem barra de vida? Quem está hospedando sai e carrega o personagem "
+                           "de novo, e a área volta ao normal.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        const float width = ImGui::GetFontSize() * 6.0f;
+        if (ImGui::Button("Sair", ImVec2(width, 0.0f))) {
+            result = game::QuitToMenu(error) ? 1 : -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancelar", ImVec2(width, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    return result;
 }
 
 void ItemRow(const items::Item& item, items::Kind kind) {
@@ -218,8 +264,17 @@ void RenderPassword() {
         ImGui::SameLine();
         if (ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f))) open = false;
     }
+    // Quitting needs no password: it is the same as the game's own "Quit Game".
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    QuitButton(-1.0f);
+    if (!g_quitError.empty()) ImGui::TextColored(kRed, "%s", g_quitError.c_str());
+    std::string error;
+    const int quit = QuitPopup(error);
+    if (quit != 0) g_quitError = error;
     ImGui::End();
-    if (!open) Close();
+    if (!open || quit > 0) Close();
 }
 
 void RenderItems() {
@@ -256,7 +311,8 @@ void RenderItems() {
     }
     ImGui::Separator();
 
-    const float footer = ImGui::GetTextLineHeightWithSpacing() * 2.0f + ImGui::GetStyle().ItemSpacing.y;
+    const float footer =
+        ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
 
     // Category list
     ImGui::BeginChild("categorias", ImVec2(210.0f, -footer), ImGuiChildFlags_Borders);
@@ -281,17 +337,26 @@ void RenderItems() {
     }
     ImGui::EndChild();
 
-    // Footer
+    // Footer: status, then the game state hint with "Sair para o menu" on the right.
     ImGui::TextColored(g_statusError ? kRed : kGreen, "%s", g_status.c_str());
+    const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const float quitWidth = ImGui::CalcTextSize(kQuitLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::AlignTextToFramePadding();
     if (!game::VersionOk())
         ImGui::TextColored(kRed, "Versão do jogo %s não suportada (precisa ser 1.15.2).", game::VersionText().c_str());
     else if (!game::InGame())
         ImGui::TextColored(kGold, "Fora do jogo: carregue um personagem para receber itens.");
     else
         ImGui::TextColored(kDim, "Os itens vão só para o seu inventário.  Insert ou Esc fecha.");
+    ImGui::SameLine(right - quitWidth);
+    QuitButton(0.0f);
+    std::string error;
+    const int quit = QuitPopup(error);
+    if (quit > 0) SetStatus("Saindo para o menu...", false);
+    else if (quit < 0) SetStatus(error, true);
 
     ImGui::End();
-    if (!open) Close();
+    if (!open || quit > 0) Close();
 }
 
 }  // namespace

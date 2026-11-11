@@ -19,8 +19,12 @@ constexpr uintptr_t kWorldChrMan = 0x477FDB8;  // WorldChrMan*
 constexpr uintptr_t kMapItemMan = 0x4769240;   // MapItemMan*
 constexpr uintptr_t kGiveItemFn = 0x7C4080;    // void ItemGib(MapItemMan*, ItemRequest*, uint32_t*)
 constexpr uintptr_t kParamRepo = 0x479B8B0;    // SoloParamRepository*
+constexpr uintptr_t kMenuMan = 0x4763258;      // MenuMan*
 
 constexpr uintptr_t kWorldChrManPlayer = 0x80;  // WorldChrMan -> PlayerIns*
+// MenuMan + 0x250: writing 1 makes the game quit to the title screen (practice tool "Quitout",
+// lib/libds3/src/pointers.rs: pointer_chain!(menu_man, 0x250)).
+constexpr uintptr_t kMenuManQuitout = 0x250;
 
 uintptr_t g_base = 0;
 bool g_versionOk = false;
@@ -227,6 +231,24 @@ bool GiveItem(uint32_t itemId, uint32_t quantity, std::string& error) {
     auto fn = reinterpret_cast<GiveItemFn>(g_base + kGiveItemFn);
     LOG("GiveItem id=0x%08X qty=%u", itemId, request.quantity);
     fn(reinterpret_cast<void*>(mapItemMan), &request, result);
+    return true;
+}
+
+bool QuitToMenu(std::string& error) {
+    if (!g_versionOk) {
+        error = "Sair para o menu só funciona no jogo 1.15.2 (este é " + g_versionText + ").";
+        return false;
+    }
+    if (!InGame()) {
+        error = "Você já está fora do jogo (tela de título ou carregando).";
+        return false;
+    }
+    uintptr_t menuMan = 0;
+    if (!mem::Read(g_base + kMenuMan, menuMan) || !menuMan || !mem::Write<uint8_t>(menuMan + kMenuManQuitout, 1)) {
+        error = "MenuMan não encontrado.";
+        return false;
+    }
+    LOG("Quit to menu");
     return true;
 }
 

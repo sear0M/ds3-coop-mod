@@ -7,6 +7,7 @@ Mod para **Dark Souls III 1.15.2** feito para jogar junto com o Seamless Co-op d
 - **Sets de armadura** inteiros com um clique, ou peça por peça.
 - Busca em todas as categorias de uma vez.
 - Enquanto o menu está aberto, o personagem não recebe teclado nem mouse.
+- Botão **Sair para o menu**, que volta para a tela de título na hora. Serve para destravar boss bugado do Seamless (veja [Boss travado](#boss-travado)). Ele aparece também na tela da senha, então qualquer um do grupo pode usar.
 
 - **Launcher para o grupo:** ele baixa sozinho a versão mais nova do mod, então todo mundo joga sempre na mesma versão.
 
@@ -53,6 +54,12 @@ A senha só é pedida uma vez por vez que o jogo é aberto. Depois de 5 senhas e
 Com o menu aberto o mouse fica livre: o jogo para de prender o cursor no meio da tela. Se o cursor do Windows mesmo assim não se mexer, o menu desenha um cursor próprio, guiado pelo movimento do mouse que o jogo recebe.
 
 Os itens só chegam quando um personagem está carregado (não funciona na tela de título).
+
+### Boss travado
+
+Às vezes, quando todo mundo morre no mesmo ataque, o Seamless Co-op perde a sincronia da luta: depois da névoa o boss fica parado, sem barra de vida, e a luta não começa (já aconteceu na Árvore, a Curse-rotted Greatwood). O bug é do Seamless e não dá para corrigir por fora.
+
+Para destravar, quem está hospedando aperta **Insert → Sair para o menu → Sair** e carrega o personagem de novo, e a área volta ao normal. Se ainda assim não resolver, todo mundo sai da sessão, o host descansa numa fogueira e cria a sessão de novo. É o mesmo que "Sair do jogo" no menu do DS3: o progresso fica salvo.
 
 ## Vídeo: FPS sem trava e tela cheia sem borda
 
