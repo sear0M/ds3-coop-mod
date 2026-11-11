@@ -8,11 +8,31 @@ Mod para **Dark Souls III 1.15.2** feito para jogar junto com o Seamless Co-op d
 - Busca em todas as categorias de uma vez.
 - Enquanto o menu está aberto, o personagem não recebe teclado nem mouse.
 
-O contador de mortes em cima da cabeça e o bloqueio de invasões vêm do próprio Seamless Co-op. Veja [Configuração do Seamless Co-op](#configuração-do-seamless-co-op).
+- **Launcher para o grupo:** ele baixa sozinho a versão mais nova do mod, então todo mundo joga sempre na mesma versão.
 
-## Instalação
+O contador de mortes em cima da cabeça e o bloqueio de invasões vêm do próprio Seamless Co-op, e o launcher configura isso em todo mundo. Veja [Configuração do Seamless Co-op](#configuração-do-seamless-co-op).
 
-1. Pegue o `dinput8.dll` (da aba *Actions* do GitHub ou compilando, veja abaixo).
+## Para jogar (manda isso para os amigos)
+
+Precisa ter o Dark Souls III 1.15.2 com o Seamless Co-op instalado, e a Steam.
+
+1. Baixe o launcher: **https://github.com/sear0M/ds3-coop-mod/releases/latest/download/DS3CoopLauncher.exe**
+2. Coloque o `DS3CoopLauncher.exe` dentro da pasta do jogo, onde está o `DarkSoulsIII.exe`. Ele também funciona em outro lugar, mas aí pergunta a pasta na primeira vez.
+3. Abra o jogo sempre por ele. A cada vez, o launcher:
+   - confere no GitHub se tem versão nova do mod e, se tiver, baixa e instala (o `dinput8.dll`);
+   - se atualiza sozinho, quando o próprio launcher muda;
+   - aplica as configurações do grupo no `SeamlessCoop\ds3sc_settings.ini` (contador de mortes, sem invasões);
+   - abre a Steam, se estiver fechada, e o jogo pelo `ds3sc_launcher.exe`.
+
+Todo arquivo baixado é conferido com SHA-256 antes de ser instalado. Se a internet cair, o botão "Jogar sem atualizar" abre o jogo com o que já está instalado.
+
+Na primeira vez o Windows pode mostrar "O Windows protegeu o computador", porque o launcher não tem assinatura digital. Clique em **Mais informações** e depois em **Executar assim mesmo**.
+
+A `cooppassword` do Seamless Co-op o launcher não mexe: combinem a mesma senha entre vocês.
+
+## Instalação manual (sem launcher)
+
+1. Baixe o `dinput8.dll` da [última versão](https://github.com/sear0M/ds3-coop-mod/releases/latest).
 2. Copie para a pasta onde está o `DarkSoulsIII.exe`.
 3. Abra o jogo como sempre (pelo `ds3sc_launcher.exe` do Seamless Co-op).
 
@@ -45,7 +65,15 @@ overhead_player_display = 4
 allow_invaders = 0
 ```
 
-Cada jogador precisa fazer isso no próprio jogo: o `overhead_player_display` muda o que *você* vê, e o `allow_invaders` vale para o mundo de quem está hospedando. Além disso, só entra na sessão quem tiver a mesma `cooppassword`.
+O launcher já aplica isso no jogo de cada um. Os valores vêm de [`launcher/seamless_overrides.ini`](launcher/seamless_overrides.ini): para mudar para o grupo inteiro, edite esse arquivo e faça push. O launcher só troca as chaves que estão nele, o resto do arquivo de cada um fica igual, e na primeira mudança ele guarda uma cópia em `ds3sc_settings.ini.bak`.
+
+Quem não usa o launcher precisa mudar no próprio jogo: o `overhead_player_display` muda o que *você* vê, e o `allow_invaders` vale para o mundo de quem está hospedando. Além disso, só entra na sessão quem tiver a mesma `cooppassword`.
+
+## Publicar uma versão nova
+
+Todo push na branch `main` faz o GitHub Actions compilar o mod e o launcher e publicar uma release nova (`build-1`, `build-2`...) com `dinput8.dll`, `DS3CoopLauncher.exe`, `seamless_overrides.ini` e `manifest.txt` (os hashes SHA-256 de cada arquivo). Na próxima vez que alguém abrir o launcher, já pega essa versão.
+
+O repositório precisa ser **público** para os amigos conseguirem baixar sem login.
 
 ## Compilar
 
@@ -67,7 +95,15 @@ Para compilar e já copiar para o jogo:
 powershell -ExecutionPolicy Bypass -File build.ps1 -GameDir "C:\Jogos\DARK SOULS III-SteamGG.NET\DARK SOULS III-SteamGG.NET\DARK SOULS III"
 ```
 
-O GitHub Actions compila a cada push e deixa o `dinput8.dll` para baixar na aba *Actions*.
+Isso gera `build\dinput8.dll` (o mod) e `build\DS3CoopLauncher.exe` (o launcher).
+
+### Testar o launcher
+
+`tests/test_launcher.ps1` sobe um servidor local fazendo papel do GitHub e uma pasta de jogo falsa. Ele confere que o launcher se atualiza sozinho, instala o mod, aplica as configurações sem mexer na `cooppassword` e recusa arquivo corrompido:
+
+```bash
+powershell -ExecutionPolicy Bypass -File tests\test_launcher.ps1
+```
 
 ### Testar sem abrir o jogo
 
@@ -98,6 +134,7 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 | `src/game.cpp` | Endereços do jogo 1.15.2, leitura das tabelas de itens (params) e a chamada da função do jogo que entrega itens. Toda leitura de memória é conferida antes, e o mod se desliga se o exe não for a versão 1.15.2. |
 | `src/menu.cpp` | Telas de senha e de itens. |
 | `src/items_data.inc` | Lista de itens gerada por `tools/gen_items.ps1` a partir de `data/item_ids.json`. |
+| `launcher/main.cpp` | O launcher: lê o `manifest.txt` da última release, compara os hashes, baixa o que mudou (inclusive ele mesmo), aplica o `seamless_overrides.ini` e abre o jogo. |
 
 ## Avisos
 

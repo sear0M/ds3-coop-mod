@@ -1,18 +1,22 @@
 name: build
 
+# Every push to main builds the mod and the launcher and publishes them as a new release
+# (build-<number>). The launcher always downloads the latest release.
+
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -22,10 +26,34 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
       - name: Build
+        shell: msys2 {0}
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build
+      - name: Package
+        shell: pwsh
+        run: |
+          $tag = "build-${{ github.run_number }}"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build/dinput8.dll, build/DS3CoopLauncher.exe, launcher/seamless_overrides.ini dist/
+          $lines = @("version=$tag", "commit=${{ github.sha }}",
+                     "files_url=https://github.com/${{ github.repository }}/releases/download/$tag/")
+          foreach ($f in Get-ChildItem dist) {
+            $lines += "$($f.Name)=$((Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower())"
+          }
+          Set-Content dist/manifest.txt $lines -Encoding ascii
+          Get-Content dist/manifest.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: dinput8
-          path: build/dinput8.dll
+          name: ds3-coop-mod
+          path: dist/
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "build-${{ github.run_number }}"
+          $msg = git log -1 --format=%s
+          gh release create $tag dist/manifest.txt dist/dinput8.dll dist/DS3CoopLauncher.exe dist/seamless_overrides.ini `
+            --title "Build ${{ github.run_number }}" --notes "$msg" --latest
