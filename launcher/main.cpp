@@ -72,13 +72,14 @@ constexpr UINT WM_APP_RESULT = WM_APP + 3;
 constexpr UINT_PTR kCloseTimer = 1;
 constexpr UINT_PTR kAnimTimer = 2;
 
-enum class Result { Launched, Ready, Error, NeedElevation, Restarted };
+enum class Result { Launched, Ready, Error, NeedElevation, Restarted, Checked };
 
 struct ResultMsg {
     Result result;
     std::wstring text;
     bool networkError;
     bool launchAfter;
+    bool updateAvailable = false;  // Checked only
 };
 
 struct Options {
@@ -87,7 +88,8 @@ struct Options {
     bool customSource = false;
     bool noLaunch = false;
     bool updated = false;
-    bool play = false;
+    bool play = false;        // update, then start the game (restart of an older launcher)
+    bool autoUpdate = false;  // update on open (restart in the middle of an update, or --no-launch)
 };
 
 Options g_opt;
@@ -240,9 +242,10 @@ bool ReadExeVersion(const std::wstring& path, uint16_t v[4]) {
 
 std::wstring Quote(const std::wstring& s) { return L"\"" + s + L"\""; }
 
-// Arguments to pass on when we restart ourselves (self-update or elevation).
+// Arguments to pass on when we restart ourselves in the middle of an update (self-update or
+// elevation): the new process carries on with the update right away.
 std::wstring RestartArgs(bool updated, bool play) {
-    std::wstring args = L"--game " + Quote(g_opt.gameDir);
+    std::wstring args = L"--game " + Quote(g_opt.gameDir) + L" --update";
     if (g_opt.customSource) args += L" --source " + Quote(g_opt.source);
     if (g_opt.noLaunch) args += L" --no-launch";
     if (updated) args += L" --updated";
@@ -669,6 +672,29 @@ void PlayWorker(std::wstring gameDir) {
     else PostResult(Result::Error, error);
 }
 
+// Only looks: compares the installed files with the latest release, changes nothing.
+void CheckWorker(Options opt) {
+    std::wstring error, text;
+    bool available = false;
+    std::string manifestText;
+    if (!HttpGet(opt.source + L"manifest.txt", manifestText, nullptr, error)) {
+        text = L"Não consegui ver se tem versão nova (sem internet?). Dá para jogar com a versão instalada.";
+    } else {
+        auto manifest = ParseManifest(manifestText);
+        const std::wstring version = Widen(manifest["version"]);
+        std::string dllHash, selfHash;
+        Sha256File(Join(opt.gameDir, kModDll), dllHash);
+        Sha256File(ExePath(), selfHash);
+        const std::string& wantLauncher = manifest[kLauncherExeA];
+        available = dllHash != manifest[kModDllA] || (wantLauncher.size() == 64 && selfHash != wantLauncher);
+        text = available ? L"Versão nova disponível: " + version + L". Clique em Atualizar."
+                         : L"Você está na versão mais nova (" + version + L").";
+        Log(L"Check: latest %ls, update available: %d", version.c_str(), available ? 1 : 0);
+    }
+    Log(L"Result %d: %ls", static_cast<int>(Result::Checked), text.c_str());
+    PostMessageW(g_wnd, WM_APP_RESULT, 0, reinterpret_cast<LPARAM>(new ResultMsg{Result::Checked, text, false, false, available}));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Game folder
 // ---------------------------------------------------------------------------------------------
@@ -787,7 +813,7 @@ constexpr const char* kDefaultVideoIni =
     "; Corrige a corrida mais lenta acima de ~82 FPS: 1 = ligado, 0 = desligado.\r\n"
     "fix_sprint = 1\r\n";
 
-enum class StatusKind { Normal, Success, Error };
+enum class StatusKind { Normal, Success, Error, Notice };
 std::wstring g_statusText = L"Iniciando...";
 StatusKind g_statusKind = StatusKind::Normal;
 int g_progress = 0;
@@ -1007,6 +1033,7 @@ void Paint(HDC target) {
         // Status, progress and info.
         const Color statusColor = g_statusKind == StatusKind::Error     ? kError
                                   : g_statusKind == StatusKind::Success ? kGold
+                                  : g_statusKind == StatusKind::Notice  ? Color(255, 245, 160, 80)
                                                                         : kAsh;
         SolidBrush statusBrush(statusColor);
         DrawCentered(g, g_statusText, *g_fonts.status, Scaled(RectF(40, 126, kWidth - 80, 50)), statusBrush,
@@ -1104,6 +1131,13 @@ void StartPlayWithoutUpdate() {
     std::thread(PlayWorker, g_opt.gameDir).detach();
 }
 
+void StartCheck() {
+    if (g_busy.exchange(true)) return;
+    g_progress = 0;
+    SetStatus(L"Conferindo se tem versão nova...", StatusKind::Normal);
+    std::thread(CheckWorker, g_opt).detach();
+}
+
 void OpenPasswordFile() {
     const std::wstring ini = Join(g_opt.gameDir, L"SeamlessCoop\\ds3sc_settings.ini");
     if (!FileExists(ini)) {
@@ -1135,12 +1169,12 @@ void OpenVideoSettings() {
 void OnClick(int hit) {
     if (!HitEnabled(hit)) return;
     switch (hit) {
-        case HitUpdate: StartUpdate(false); break;
-        case HitPlay: StartUpdate(true); break;
+        case HitUpdate: StartUpdate(false); break;     // the only action that downloads/installs
+        case HitPlay: StartPlayWithoutUpdate(); break;  // starts the installed version as is
         case HitPassword: OpenPasswordFile(); break;
         case HitVideo: OpenVideoSettings(); break;
         case HitFolder:
-            if (ResolveGameDir(true)) StartUpdate(false);
+            if (ResolveGameDir(true)) StartCheck();
             break;
         default: break;
     }
@@ -1164,6 +1198,10 @@ void OnResult(ResultMsg* msg) {
             break;
         case Result::Restarted:
             DestroyWindow(g_wnd);
+            break;
+        case Result::Checked:
+            g_progress = r.updateAvailable ? 0 : 100;
+            SetStatus(r.text, r.updateAvailable ? StatusKind::Notice : StatusKind::Success);
             break;
         case Result::NeedElevation: {
             SetStatus(L"Precisa de permissão de administrador para escrever na pasta do jogo...", StatusKind::Normal);
@@ -1228,7 +1266,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             Log(L"Game folder: %ls", g_opt.gameDir.c_str());
-            StartUpdate(g_opt.play);
+            // Updating only happens on the "Atualizar" button. On open we just look; the exception is
+            // a restart in the middle of an update (self-update, admin rights) or the test mode.
+            if (g_opt.play) StartUpdate(true);
+            else if (g_opt.autoUpdate) StartUpdate(false);
+            else StartCheck();
             return 0;
         case WM_APP_STATUS:
             if (wParam != 0xFFFF) g_progress = static_cast<int>(wParam);
@@ -1327,8 +1369,12 @@ void ParseArgs() {
         } else if (a == L"--no-launch") g_opt.noLaunch = true;
         else if (a == L"--updated") g_opt.updated = true;
         else if (a == L"--play") g_opt.play = true;
+        else if (a == L"--update") g_opt.autoUpdate = true;
     }
-    if (g_opt.noLaunch) g_opt.play = false;
+    if (g_opt.noLaunch) {
+        g_opt.play = false;
+        g_opt.autoUpdate = true;
+    }
     LocalFree(argv);
 }
 

@@ -18,13 +18,14 @@ Precisa ter o Dark Souls III 1.15.2 com o Seamless Co-op instalado, e a Steam.
 
 1. Baixe o launcher: **https://github.com/sear0M/ds3-coop-mod/releases/latest/download/DS3CoopLauncher.exe**
 2. Coloque o `DS3CoopLauncher.exe` dentro da pasta do jogo, onde está o `DarkSoulsIII.exe`. Ele também funciona em outro lugar, mas aí pergunta a pasta na primeira vez.
-3. Abra o jogo sempre por ele. A janela **DS3 Moraes e amigos** mostra a versão do launcher e do mod instalado, e já confere sozinha se tem atualização. Os botões:
-   - **Atualizar:** puxa a versão mais nova do GitHub agora;
-   - **Iniciar jogo:** confere a atualização e abre a Steam (se estiver fechada) e o jogo pelo `ds3sc_launcher.exe`;
+3. Abra o jogo sempre por ele. A janela **DS3 Moraes e amigos** mostra a versão do launcher e do mod instalado. Ao abrir, ela só **confere** se tem versão nova e avisa ("Versão nova disponível... clique em Atualizar"), sem baixar nada. Os botões:
+   - **Atualizar:** o único que baixa e instala. Puxa a versão mais nova do GitHub na hora;
+   - **Iniciar jogo:** abre a Steam (se estiver fechada) e o jogo pelo `ds3sc_launcher.exe`, com a versão que estiver instalada;
    - **Senha do coop:** abre o `SeamlessCoop\ds3sc_settings.ini` no Bloco de Notas, onde fica a `cooppassword`;
+   - **Opções de vídeo:** abre o `ds3coopmod.ini` (FPS e tela cheia sem borda);
    - **Trocar pasta do jogo:** para quando o launcher não está dentro da pasta do jogo.
 
-Ao atualizar, o launcher baixa o mod novo (`dinput8.dll`), se atualiza sozinho quando ele mesmo mudou e aplica as configurações do grupo no `ds3sc_settings.ini` (contador de mortes, sem invasões). Todo arquivo baixado é conferido com SHA-256 antes de ser instalado. Se a internet cair, ele pergunta se você quer abrir o jogo com a versão que já está instalada.
+Ao clicar em Atualizar, o launcher baixa o mod novo (`dinput8.dll`), se atualiza sozinho quando ele mesmo mudou e aplica as configurações do grupo no `ds3sc_settings.ini` (contador de mortes, sem invasões). Todo arquivo baixado é conferido com SHA-256 antes de ser instalado. Para todo mundo jogar na mesma versão, cliquem em Atualizar quando aparecer o aviso de versão nova.
 
 Na primeira vez o Windows pode mostrar "O Windows protegeu o computador", porque o launcher não tem assinatura digital. Clique em **Mais informações** e depois em **Executar assim mesmo**.
 
