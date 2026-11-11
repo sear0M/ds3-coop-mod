@@ -4,9 +4,9 @@
 
 namespace menu {
 
-constexpr UINT kToggleKey = VK_F12;
+constexpr UINT kToggleKey = VK_INSERT;
 
-// Called from the window procedure when F12 is pressed.
+// Called from the window procedure when the toggle key (Insert) is pressed.
 void Toggle();
 void Close();
 

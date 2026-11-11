@@ -288,7 +288,7 @@ void RenderItems() {
     else if (!game::InGame())
         ImGui::TextColored(kGold, "Fora do jogo: carregue um personagem para receber itens.");
     else
-        ImGui::TextColored(kDim, "Os itens vão só para o seu inventário.  F12 ou Esc fecha.");
+        ImGui::TextColored(kDim, "Os itens vão só para o seu inventário.  Insert ou Esc fecha.");
 
     ImGui::End();
     if (!open) Close();

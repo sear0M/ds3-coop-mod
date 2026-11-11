@@ -2,7 +2,7 @@
 
 Mod para **Dark Souls III 1.15.2** feito para jogar junto com o Seamless Co-op do LukeYui (Nexus Mods).
 
-- **F12 abre um menu protegido por senha.** Depois da senha aparece uma tabela de itens separada por categoria (armas, escudos, arcos e bestas, flechas, catalisadores, magias, sets de armadura, anéis, consumíveis, melhorias, almas, itens-chave e mais). Clicar num item coloca ele **só no seu inventário**.
+- **Insert abre um menu protegido por senha.** Depois da senha aparece uma tabela de itens separada por categoria (armas, escudos, arcos e bestas, flechas, catalisadores, magias, sets de armadura, anéis, consumíveis, melhorias, almas, itens-chave e mais). Clicar num item coloca ele **só no seu inventário**.
 - Armas podem vir com **nível de melhoria (+0 a +10)** e **infusão**. O mod confere nas tabelas do jogo se a combinação existe e corrige sozinho (armas únicas param no +5, armas que não aceitam infusão vêm normais).
 - **Sets de armadura** inteiros com um clique, ou peça por peça.
 - Busca em todas as categorias de uma vez.
@@ -44,12 +44,12 @@ O mod escreve um log em `ds3coopmod.log`, na pasta do jogo. Se algo não funcion
 
 | Tecla | O que faz |
 |---|---|
-| `F12` | Abre a senha / abre e fecha o menu de itens |
+| `Insert` | Abre a senha / abre e fecha o menu de itens |
 | `Esc` | Fecha o menu |
 
 A senha só é pedida uma vez por vez que o jogo é aberto. Depois de 5 senhas erradas o menu trava por 30 segundos.
 
-`F12` também é a tecla de print da Steam. Se incomodar, troque a tecla de captura em *Steam > Configurações > Em jogo*.
+Com o menu aberto o mouse fica livre: o jogo para de prender o cursor no meio da tela. Se o cursor do Windows mesmo assim não se mexer, o menu desenha um cursor próprio, guiado pelo movimento do mouse que o jogo recebe.
 
 Os itens só chegam quando um personagem está carregado (não funciona na tela de título).
 
@@ -107,7 +107,7 @@ powershell -ExecutionPolicy Bypass -File tests\test_launcher.ps1
 
 ### Testar sem abrir o jogo
 
-`tests/harness.cpp` é um programa D3D11 que se chama `DarkSoulsIII.exe` só para o mod carregar nele. Ele aperta F12, digita a senha, clica no menu e salva prints em `build\harness\`:
+`tests/harness.cpp` é um programa D3D11 que se chama `DarkSoulsIII.exe` só para o mod carregar nele. Ele aperta Insert, digita a senha, clica no menu e salva prints em `build\harness\`:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Password "<senha>"
@@ -130,7 +130,7 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 | Arquivo | O que faz |
 |---|---|
 | `src/dllmain.cpp` | O jogo carrega o `dinput8.dll` da própria pasta. Repassamos o `DirectInput8Create` para o `dinput8.dll` original do Windows e iniciamos o mod numa thread separada (só dentro do `DarkSoulsIII.exe`). |
-| `src/hooks.cpp` | Hook em `IDXGISwapChain::Present` para desenhar o menu com Dear ImGui, hook na janela para o F12 e o mouse, e hook no DirectInput para o jogo não receber teclado e mouse com o menu aberto. |
+| `src/hooks.cpp` | Hook em `IDXGISwapChain::Present` para desenhar o menu com Dear ImGui, hook na janela para o Insert e o mouse, hooks em `SetCursorPos`/`ClipCursor` para o jogo não prender o cursor, e hook no DirectInput para o jogo não receber teclado e mouse com o menu aberto (o movimento do mouse vai para o cursor do menu). |
 | `src/game.cpp` | Endereços do jogo 1.15.2, leitura das tabelas de itens (params) e a chamada da função do jogo que entrega itens. Toda leitura de memória é conferida antes, e o mod se desliga se o exe não for a versão 1.15.2. |
 | `src/menu.cpp` | Telas de senha e de itens. |
 | `src/items_data.inc` | Lista de itens gerada por `tools/gen_items.ps1` a partir de `data/item_ids.json`. |

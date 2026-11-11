@@ -1,5 +1,5 @@
 // Test harness: a tiny D3D11 app that pretends to be DarkSoulsIII.exe so the mod (dinput8.dll)
-// loads into it. It opens the menu with F12, types the password, clicks around and saves
+// loads into it. It opens the menu with Insert, types the password, clicks around and saves
 // screenshots of what the mod drew. No game is needed; game-specific features (giving items)
 // correctly refuse to run because the harness is not version 1.15.2.
 //
@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
 
     static std::string s_password = password;
     const Step steps[] = {
-        {4.0, [](HWND h) { Key(h, VK_F12); }},
+        {4.0, [](HWND h) { Key(h, VK_INSERT); }},
         {4.6, [](HWND) { SaveBackBuffer("1_senha.bmp"); }},
         {4.8, [](HWND h) { Type(h, "senha-errada"); Key(h, VK_RETURN); }},
         {5.3, [](HWND) { SaveBackBuffer("2_senha_errada.bmp"); }},
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
         {8.0, [](HWND h) { Click(h, 290, 97); }},  // search box
         {8.3, [](HWND h) { Type(h, "moon"); }},
         {8.9, [](HWND) { SaveBackBuffer("6_busca.bmp"); }},
-        {9.1, [](HWND h) { Key(h, VK_F12); }},
+        {9.1, [](HWND h) { Key(h, VK_INSERT); }},
         {9.7, [](HWND) { SaveBackBuffer("7_fechado.bmp"); }},
         {9.9, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
