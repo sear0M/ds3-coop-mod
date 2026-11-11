@@ -828,11 +828,12 @@ void RoundRect(GraphicsPath& path, const RectF& r, float radius) {
 }
 
 void DrawCentered(Graphics& g, const std::wstring& text, const Font& font, const RectF& rect, const Brush& brush,
-                  StringTrimming trimming = StringTrimmingEllipsisCharacter) {
+                  StringTrimming trimming = StringTrimmingEllipsisCharacter, bool singleLine = false) {
     StringFormat fmt;
     fmt.SetAlignment(StringAlignmentCenter);
     fmt.SetLineAlignment(StringAlignmentCenter);
     fmt.SetTrimming(trimming);
+    if (singleLine) fmt.SetFormatFlags(StringFormatFlagsNoWrap);
     g.DrawString(text.c_str(), -1, &font, rect, &fmt, &brush);
 }
 
@@ -1001,7 +1002,7 @@ void Paint(HDC target) {
             g.FillRectangle(&fillBrush, fill);
         }
         DrawCentered(g, InfoLine(), *g_fonts.small, Scaled(RectF(30, 198, kWidth - 60, 20)), dim,
-                     StringTrimmingEllipsisPath);
+                     StringTrimmingEllipsisPath, true);
 
         // Buttons.
         DrawButton(g, HitUpdate, L"Atualizar", false);
