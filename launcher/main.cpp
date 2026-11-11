@@ -1,20 +1,23 @@
-// DS3 Coop Launcher
+// DS3 Moraes e amigos - launcher
 //
 // Keeps every player on the same mod version:
 //   1. downloads manifest.txt from the latest GitHub release,
 //   2. updates itself, dinput8.dll and the Seamless Co-op settings when their SHA-256 differs,
-//   3. opens Steam if needed and starts the game through ds3sc_launcher.exe.
+//   3. "Iniciar jogo" opens Steam if needed and starts the game through ds3sc_launcher.exe.
+// On open it checks for updates by itself; the window has buttons to update, start the game
+// and open the Seamless Co-op settings file (where the co-op password is).
 //
 // Command line (mostly for testing):
 //   --game "<dir>"    game folder (the one with DarkSoulsIII.exe)
 //   --source "<url>"  where manifest.txt is (default: latest GitHub release)
-//   --no-launch       update only, do not start the game, close by itself (exit code 0/1)
+//   --no-launch       update only, then close by itself (exit code 0/1)
+//   --play            start the game right after the update (used after a self-update restart)
 //   --updated         internal: set after a self-update restart
 
 #include <windows.h>
 
 #include <bcrypt.h>
-#include <commctrl.h>
+#include <dwmapi.h>
 #include <objbase.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -22,23 +25,38 @@
 #include <tlhelp32.h>
 #include <winhttp.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+// gdiplus.h uses min/max, which NOMINMAX removes.
+namespace Gdiplus {
+using std::max;
+using std::min;
+}  // namespace Gdiplus
+#include <gdiplus.h>
+
 #ifndef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
 #define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY 4
+#endif
+#ifndef DS3_BUILD_VERSION
+#define DS3_BUILD_VERSION "dev"
 #endif
 
 namespace {
 
-constexpr wchar_t kAppName[] = L"DS3 Coop Mod";
+constexpr wchar_t kAppName[] = L"DS3 Moraes e amigos";
+constexpr wchar_t kLauncherVersion[] = L"" DS3_BUILD_VERSION;
 constexpr wchar_t kDefaultSource[] = L"https://github.com/sear0M/ds3-coop-mod/releases/latest/download/";
 constexpr wchar_t kModDll[] = L"dinput8.dll";
 constexpr wchar_t kLauncherExe[] = L"DS3CoopLauncher.exe";
@@ -52,9 +70,16 @@ constexpr UINT WM_APP_START = WM_APP + 1;
 constexpr UINT WM_APP_STATUS = WM_APP + 2;
 constexpr UINT WM_APP_RESULT = WM_APP + 3;
 constexpr UINT_PTR kCloseTimer = 1;
+constexpr UINT_PTR kAnimTimer = 2;
 
-enum Control { IdRetry = 101, IdPlay = 102, IdFolder = 103 };
 enum class Result { Launched, Ready, Error, NeedElevation, Restarted };
+
+struct ResultMsg {
+    Result result;
+    std::wstring text;
+    bool networkError;
+    bool launchAfter;
+};
 
 struct Options {
     std::wstring gameDir;
@@ -62,21 +87,16 @@ struct Options {
     bool customSource = false;
     bool noLaunch = false;
     bool updated = false;
+    bool play = false;
 };
 
 Options g_opt;
-HWND g_wnd = nullptr, g_title = nullptr, g_status = nullptr, g_progress = nullptr, g_version = nullptr;
-HWND g_btnRetry = nullptr, g_btnPlay = nullptr, g_btnFolder = nullptr;
-HFONT g_font = nullptr, g_titleFont = nullptr, g_smallFont = nullptr;
+HWND g_wnd = nullptr;
 int g_dpi = 96;
 int g_exitCode = 0;
 std::atomic<bool> g_busy{false};
 FILE* g_log = nullptr;
-
-// ---------------------------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------------------------
-int S(int v) { return MulDiv(v, g_dpi, 96); }
+thread_local bool t_launchAfter = false;  // what the current worker was asked to do
 
 void Log(const wchar_t* fmt, ...) {
     if (!g_log) return;
@@ -221,11 +241,12 @@ bool ReadExeVersion(const std::wstring& path, uint16_t v[4]) {
 std::wstring Quote(const std::wstring& s) { return L"\"" + s + L"\""; }
 
 // Arguments to pass on when we restart ourselves (self-update or elevation).
-std::wstring RestartArgs(bool updated) {
+std::wstring RestartArgs(bool updated, bool play) {
     std::wstring args = L"--game " + Quote(g_opt.gameDir);
     if (g_opt.customSource) args += L" --source " + Quote(g_opt.source);
     if (g_opt.noLaunch) args += L" --no-launch";
     if (updated) args += L" --updated";
+    if (play) args += L" --play";
     return args;
 }
 
@@ -455,9 +476,10 @@ void PostStatus(const std::wstring& text, int progress = -1) {
                  reinterpret_cast<LPARAM>(new std::wstring(text)));
 }
 
-void PostResult(Result result, const std::wstring& text) {
+void PostResult(Result result, const std::wstring& text, bool networkError = false) {
     Log(L"Result %d: %ls", static_cast<int>(result), text.c_str());
-    PostMessageW(g_wnd, WM_APP_RESULT, static_cast<WPARAM>(result), reinterpret_cast<LPARAM>(new std::wstring(text)));
+    PostMessageW(g_wnd, WM_APP_RESULT, 0,
+                 reinterpret_cast<LPARAM>(new ResultMsg{result, text, networkError, t_launchAfter}));
 }
 
 Progress Range(int from, int to) {
@@ -506,13 +528,14 @@ bool LaunchGame(const std::wstring& gameDir, std::wstring& error) {
     return true;
 }
 
-void UpdateWorker(Options opt) {
+void UpdateWorker(Options opt, bool launchAfter) {
+    t_launchAfter = launchAfter;
     std::wstring error;
     PostStatus(L"Procurando atualização...", 2);
 
     std::string manifestText;
     if (!HttpGet(opt.source + L"manifest.txt", manifestText, nullptr, error)) {
-        PostResult(Result::Error, L"Não consegui ver a versão mais nova do mod.\n" + error);
+        PostResult(Result::Error, L"Não consegui ver a versão mais nova do mod. " + error, true);
         return;
     }
     auto manifest = ParseManifest(manifestText);
@@ -550,7 +573,7 @@ void UpdateWorker(Options opt) {
             PostResult(Result::Error, L"Não consegui trocar o launcher (erro " + std::to_wstring(GetLastError()) + L").");
             return;
         }
-        std::wstring cmd = Quote(self) + L" " + RestartArgs(true);
+        std::wstring cmd = Quote(self) + L" " + RestartArgs(true, launchAfter);
         STARTUPINFOW si{};
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi{};
@@ -576,7 +599,7 @@ void UpdateWorker(Options opt) {
         PostStatus(L"Baixando o mod " + version + L"...", 20);
         std::string data;
         if (!DownloadVerified(filesUrl + kModDll, wantDll, data, Range(20, 85), error)) {
-            PostResult(Result::Error, error);
+            PostResult(Result::Error, error, true);
             return;
         }
         const std::wstring tmp = dllPath + L".download";
@@ -590,7 +613,7 @@ void UpdateWorker(Options opt) {
         }
         PostStatus(L"Mod atualizado para a versão " + version + L".", 88);
     } else {
-        PostStatus(L"O mod já está na versão mais nova (" + version + L").", 88);
+        Log(L"O mod já está na versão mais nova (%ls).", version.c_str());
     }
 
     // 3. Seamless Co-op settings
@@ -625,8 +648,11 @@ void UpdateWorker(Options opt) {
         Log(L"%ls", versionNote.c_str());
     }
 
-    if (opt.noLaunch) {
-        PostResult(Result::Ready, L"Tudo atualizado (" + version + L"). " + settingsNote + versionNote);
+    if (!launchAfter) {
+        std::wstring text = L"Tudo pronto. Mod na versão mais nova (" + version + L").";
+        if (!settingsNote.empty()) text += L" " + settingsNote;
+        if (!versionNote.empty()) text += L" " + versionNote;
+        PostResult(Result::Ready, text);
         return;
     }
     if (!LaunchGame(opt.gameDir, error)) {
@@ -637,6 +663,7 @@ void UpdateWorker(Options opt) {
 }
 
 void PlayWorker(std::wstring gameDir) {
+    t_launchAfter = true;
     std::wstring error;
     if (LaunchGame(gameDir, error)) PostResult(Result::Launched, L"");
     else PostResult(Result::Error, error);
@@ -716,176 +743,532 @@ bool ResolveGameDir(bool forcePick) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// UI
+// UI: one custom-painted window in Dark Souls III colors (GDI+, double buffered)
 // ---------------------------------------------------------------------------------------------
-void ShowButtons(bool show) {
-    const int cmd = show ? SW_SHOW : SW_HIDE;
-    ShowWindow(g_btnRetry, cmd);
-    ShowWindow(g_btnFolder, cmd);
-    const bool canPlay = show && IsGameDir(g_opt.gameDir) && FileExists(Join(g_opt.gameDir, kModDll)) &&
-                         FileExists(Join(g_opt.gameDir, L"ds3sc_launcher.exe"));
-    ShowWindow(g_btnPlay, canPlay ? SW_SHOW : SW_HIDE);
+using namespace Gdiplus;
+
+// Palette: ash, aged gold and bonfire ember on near-black.
+const Color kBgTop(255, 27, 23, 18);
+const Color kBgBottom(255, 8, 7, 6);
+const Color kFrame(255, 66, 54, 38);
+const Color kGold(255, 201, 163, 92);
+const Color kGoldLight(255, 236, 211, 150);
+const Color kGoldDark(255, 150, 116, 60);
+const Color kAsh(255, 214, 204, 182);
+const Color kAshDim(255, 140, 130, 112);
+const Color kEmber(255, 226, 122, 48);
+const Color kEmberDark(255, 140, 62, 24);
+const Color kError(255, 230, 104, 70);
+
+constexpr float kWidth = 620.0f, kHeight = 350.0f;  // logical size of the client area
+
+enum Hit { HitNone = -1, HitUpdate = 0, HitPlay = 1, HitPassword = 2, HitFolder = 3 };
+const RectF kButtonRects[3] = {{24, 236, 166, 52}, {206, 236, 208, 52}, {430, 236, 166, 52}};
+const RectF kFolderLink(200, 306, 220, 22);
+
+enum class StatusKind { Normal, Success, Error };
+std::wstring g_statusText = L"Iniciando...";
+StatusKind g_statusKind = StatusKind::Normal;
+int g_progress = 0;
+int g_hover = HitNone;
+int g_pressed = HitNone;
+bool g_tracking = false;
+ULONG_PTR g_gdiplusToken = 0;
+
+struct Fonts {
+    std::unique_ptr<FontFamily> serif;
+    std::unique_ptr<FontFamily> sans;
+    std::unique_ptr<Font> title, subtitle, status, button, buttonBig, small;
+} g_fonts;
+
+struct Ember {
+    float x, y, vx, vy, life, maxLife, size, phase;
+};
+std::vector<Ember> g_embers;
+unsigned g_rng = 12345;
+
+float Rand01() {
+    g_rng = g_rng * 1664525u + 1013904223u;
+    return static_cast<float>((g_rng >> 8) & 0xFFFF) / 65535.0f;
 }
 
-void SetStatusText(const std::wstring& text) { SetWindowTextW(g_status, text.c_str()); }
-
-void UpdateVersionLabel() {
-    std::string info;
-    std::wstring text = L"Pasta do jogo: " + (g_opt.gameDir.empty() ? std::wstring(L"?") : g_opt.gameDir);
-    if (ReadFileBytes(Join(g_opt.gameDir, L"ds3coopmod_version.txt"), info)) {
-        const std::wstring version = Widen(ParseManifest(info)["version"]);
-        if (!version.empty()) text = L"Mod instalado: " + version + L"   |   " + text;
-    }
-    SetWindowTextW(g_version, text.c_str());
-}
-
-void StartUpdate() {
-    if (g_busy.exchange(true)) return;
-    ShowButtons(false);
-    SendMessageW(g_progress, PBM_SETPOS, 0, 0);
-    UpdateVersionLabel();
-    std::thread(UpdateWorker, g_opt).detach();
-}
-
-HWND MakeControl(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font) {
-    HWND hwnd = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), g_wnd,
-                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    return hwnd;
-}
+float Scale() { return static_cast<float>(g_dpi) / 96.0f; }
 
 void CreateFonts() {
-    NONCLIENTMETRICSW ncm{};
-    ncm.cbSize = sizeof(ncm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-    LOGFONTW lf = ncm.lfMessageFont;
-    g_font = CreateFontIndirectW(&lf);
-    LOGFONTW small = lf;
-    small.lfHeight = lf.lfHeight * 85 / 100;
-    g_smallFont = CreateFontIndirectW(&small);
-    LOGFONTW title = lf;
-    title.lfHeight = lf.lfHeight * 17 / 10;
-    title.lfWeight = FW_BOLD;
-    g_titleFont = CreateFontIndirectW(&title);
+    auto pick = [](std::initializer_list<const wchar_t*> names) {
+        for (const wchar_t* n : names) {
+            auto f = std::make_unique<FontFamily>(n);
+            if (f->IsAvailable()) return f;
+        }
+        return std::make_unique<FontFamily>(L"Times New Roman");
+    };
+    g_fonts.serif = pick({L"Palatino Linotype", L"Book Antiqua", L"Georgia", L"Cambria"});
+    g_fonts.sans = pick({L"Segoe UI", L"Tahoma"});
+    const float s = Scale();
+    g_fonts.title = std::make_unique<Font>(g_fonts.serif.get(), 34.0f * s, FontStyleRegular, UnitPixel);
+    g_fonts.subtitle = std::make_unique<Font>(g_fonts.serif.get(), 14.0f * s, FontStyleItalic, UnitPixel);
+    g_fonts.status = std::make_unique<Font>(g_fonts.serif.get(), 15.5f * s, FontStyleRegular, UnitPixel);
+    g_fonts.button = std::make_unique<Font>(g_fonts.serif.get(), 16.0f * s, FontStyleRegular, UnitPixel);
+    g_fonts.buttonBig = std::make_unique<Font>(g_fonts.serif.get(), 19.0f * s, FontStyleBold, UnitPixel);
+    g_fonts.small = std::make_unique<Font>(g_fonts.sans.get(), 11.5f * s, FontStyleRegular, UnitPixel);
+}
+
+RectF Scaled(const RectF& r) {
+    const float s = Scale();
+    return RectF(r.X * s, r.Y * s, r.Width * s, r.Height * s);
+}
+
+void RoundRect(GraphicsPath& path, const RectF& r, float radius) {
+    const float d = radius * 2.0f;
+    path.AddArc(r.X, r.Y, d, d, 180, 90);
+    path.AddArc(r.X + r.Width - d, r.Y, d, d, 270, 90);
+    path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0, 90);
+    path.AddArc(r.X, r.Y + r.Height - d, d, d, 90, 90);
+    path.CloseFigure();
+}
+
+void DrawCentered(Graphics& g, const std::wstring& text, const Font& font, const RectF& rect, const Brush& brush,
+                  StringTrimming trimming = StringTrimmingEllipsisCharacter) {
+    StringFormat fmt;
+    fmt.SetAlignment(StringAlignmentCenter);
+    fmt.SetLineAlignment(StringAlignmentCenter);
+    fmt.SetTrimming(trimming);
+    g.DrawString(text.c_str(), -1, &font, rect, &fmt, &brush);
+}
+
+// A thin gold line that fades at both ends, with a small diamond in the middle.
+void DrawDivider(Graphics& g, float y, float x0, float x1) {
+    const float s = Scale(), cx = (x0 + x1) * 0.5f * s, yy = y * s;
+    const Color clear(0, kGold.GetR(), kGold.GetG(), kGold.GetB());
+    LinearGradientBrush left(PointF(x0 * s, yy), PointF(cx - 10 * s, yy), clear, kGoldDark);
+    LinearGradientBrush right(PointF(cx + 10 * s, yy), PointF(x1 * s, yy), kGoldDark, clear);
+    g.FillRectangle(&left, RectF(x0 * s, yy - 0.5f * s, cx - 10 * s - x0 * s, 1.0f * s));
+    g.FillRectangle(&right, RectF(cx + 10 * s, yy - 0.5f * s, x1 * s - cx - 10 * s, 1.0f * s));
+    PointF diamond[4] = {{cx, yy - 5 * s}, {cx + 5 * s, yy}, {cx, yy + 5 * s}, {cx - 5 * s, yy}};
+    SolidBrush gold(kGold);
+    g.FillPolygon(&gold, diamond, 4);
+}
+
+bool HitEnabled(int hit) {
+    if (hit == HitPassword) return true;
+    return !g_busy;
+}
+
+void DrawButton(Graphics& g, int index, const wchar_t* label, bool primary) {
+    const RectF r = Scaled(kButtonRects[index]);
+    const bool enabled = HitEnabled(index);
+    const bool hover = enabled && g_hover == index;
+    const bool pressed = hover && g_pressed == index;
+    const float s = Scale();
+
+    if (primary && enabled) {  // ember glow behind the main button
+        GraphicsPath glowPath;
+        glowPath.AddEllipse(RectF(r.X - 30 * s, r.Y - 22 * s, r.Width + 60 * s, r.Height + 44 * s));
+        PathGradientBrush glow(&glowPath);
+        glow.SetCenterColor(Color(hover ? 90 : 55, 230, 120, 40));
+        Color surround(0, 230, 120, 40);
+        int count = 1;
+        glow.SetSurroundColors(&surround, &count);
+        g.FillPath(&glow, &glowPath);
+    }
+
+    GraphicsPath path;
+    RoundRect(path, r, 3.0f * s);
+    Color top, bottom, border, text;
+    if (!enabled) {
+        top = Color(255, 28, 25, 21);
+        bottom = Color(255, 20, 18, 15);
+        border = Color(255, 52, 45, 36);
+        text = Color(255, 96, 89, 77);
+    } else if (primary) {
+        top = pressed ? Color(255, 70, 36, 16) : hover ? Color(255, 92, 48, 20) : Color(255, 74, 40, 18);
+        bottom = pressed ? Color(255, 44, 22, 10) : Color(255, 38, 20, 10);
+        border = hover ? Color(255, 244, 170, 92) : kEmber;
+        text = hover ? Color(255, 255, 236, 196) : Color(255, 246, 220, 168);
+    } else {
+        top = pressed ? Color(255, 30, 26, 20) : hover ? Color(255, 44, 37, 27) : Color(255, 34, 29, 23);
+        bottom = Color(255, 21, 18, 14);
+        border = hover ? kGold : Color(255, 98, 80, 52);
+        text = hover ? kGoldLight : kAsh;
+    }
+    LinearGradientBrush fill(PointF(0, r.Y), PointF(0, r.Y + r.Height), top, bottom);
+    g.FillPath(&fill, &path);
+    Pen pen(border, (primary ? 1.6f : 1.1f) * s);
+    g.DrawPath(&pen, &path);
+    // inner highlight line for a bevelled look
+    Pen inner(Color(enabled ? 40 : 15, 255, 230, 180), 1.0f);
+    g.DrawLine(&inner, PointF(r.X + 4 * s, r.Y + 1.5f * s), PointF(r.X + r.Width - 4 * s, r.Y + 1.5f * s));
+
+    SolidBrush brush(text);
+    RectF textRect = r;
+    if (pressed) textRect.Y += 1.0f * s;
+    DrawCentered(g, label, primary ? *g_fonts.buttonBig : *g_fonts.button, textRect, brush);
+}
+
+std::wstring InfoLine() {
+    std::wstring installed;
+    std::string info;
+    if (ReadFileBytes(Join(g_opt.gameDir, L"ds3coopmod_version.txt"), info))
+        installed = Widen(ParseManifest(info)["version"]);
+    std::wstring text = L"Mod instalado: " + (installed.empty() ? std::wstring(L"nenhum") : installed);
+    text += L"     Pasta do jogo: " + (g_opt.gameDir.empty() ? std::wstring(L"?") : g_opt.gameDir);
+    return text;
+}
+
+void Paint(HDC target) {
+    RECT rc{};
+    GetClientRect(g_wnd, &rc);
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+    HDC mem = CreateCompatibleDC(target);
+    HBITMAP bmp = CreateCompatibleBitmap(target, w, h);
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    {
+        Graphics g(mem);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        const float s = Scale();
+        const float W = static_cast<float>(w), H = static_cast<float>(h);
+
+        // Background: dark gradient, bonfire glow from below, rising embers.
+        LinearGradientBrush bg(PointF(0, 0), PointF(0, H), kBgTop, kBgBottom);
+        g.FillRectangle(&bg, 0.0f, 0.0f, W, H);
+        GraphicsPath glowPath;
+        glowPath.AddEllipse(RectF(W * 0.5f - 330 * s, H - 110 * s, 660 * s, 300 * s));
+        PathGradientBrush glow(&glowPath);
+        glow.SetCenterColor(Color(80, 210, 100, 30));
+        Color surround(0, 210, 100, 30);
+        int count = 1;
+        glow.SetSurroundColors(&surround, &count);
+        g.FillPath(&glow, &glowPath);
+        for (const Ember& e : g_embers) {
+            const float t = e.life / e.maxLife;
+            const float alpha = std::sin(t * 3.14159f) * 255.0f;
+            SolidBrush halo(Color(static_cast<BYTE>(alpha * 0.16f), 255, 130, 40));
+            SolidBrush core(Color(static_cast<BYTE>(alpha), 255, 205, 120));
+            const float hr = e.size * 1.7f * s, cr = e.size * 0.55f * s;
+            g.FillEllipse(&halo, e.x * s - hr, e.y * s - hr, hr * 2.0f, hr * 2.0f);
+            g.FillEllipse(&core, e.x * s - cr, e.y * s - cr, cr * 2.0f, cr * 2.0f);
+        }
+
+        // Frame with corner ornaments.
+        Pen frame(kFrame, 1.0f * s);
+        const RectF fr(10 * s, 10 * s, W - 20 * s, H - 20 * s);
+        g.DrawRectangle(&frame, fr);
+        Pen ornament(kGoldDark, 1.4f * s);
+        const float o = 14 * s;
+        g.DrawLine(&ornament, fr.X, fr.Y, fr.X + o, fr.Y);
+        g.DrawLine(&ornament, fr.X, fr.Y, fr.X, fr.Y + o);
+        g.DrawLine(&ornament, fr.X + fr.Width, fr.Y, fr.X + fr.Width - o, fr.Y);
+        g.DrawLine(&ornament, fr.X + fr.Width, fr.Y, fr.X + fr.Width, fr.Y + o);
+        g.DrawLine(&ornament, fr.X, fr.Y + fr.Height, fr.X + o, fr.Y + fr.Height);
+        g.DrawLine(&ornament, fr.X, fr.Y + fr.Height, fr.X, fr.Y + fr.Height - o);
+        g.DrawLine(&ornament, fr.X + fr.Width, fr.Y + fr.Height, fr.X + fr.Width - o, fr.Y + fr.Height);
+        g.DrawLine(&ornament, fr.X + fr.Width, fr.Y + fr.Height, fr.X + fr.Width, fr.Y + fr.Height - o);
+
+        // Title with a soft shadow and a gold gradient.
+        const RectF titleRect = Scaled(RectF(0, 26, kWidth, 52));
+        SolidBrush shadow(Color(170, 0, 0, 0));
+        RectF shadowRect = titleRect;
+        shadowRect.Offset(0, 2.0f * s);
+        DrawCentered(g, kAppName, *g_fonts.title, shadowRect, shadow);
+        LinearGradientBrush titleBrush(PointF(0, titleRect.Y), PointF(0, titleRect.Y + titleRect.Height), kGoldLight,
+                                       kGoldDark);
+        DrawCentered(g, kAppName, *g_fonts.title, titleRect, titleBrush);
+
+        SolidBrush dim(kAshDim);
+        DrawCentered(g, std::wstring(L"Seamless Co-op   •   Launcher ") + kLauncherVersion, *g_fonts.subtitle,
+                     Scaled(RectF(0, 80, kWidth, 22)), dim);
+        DrawDivider(g, 114, 70, kWidth - 70);
+
+        // Status, progress and info.
+        const Color statusColor = g_statusKind == StatusKind::Error     ? kError
+                                  : g_statusKind == StatusKind::Success ? kGold
+                                                                        : kAsh;
+        SolidBrush statusBrush(statusColor);
+        DrawCentered(g, g_statusText, *g_fonts.status, Scaled(RectF(40, 126, kWidth - 80, 50)), statusBrush,
+                     StringTrimmingEllipsisWord);
+
+        const RectF track = Scaled(RectF(120, 184, kWidth - 240, 4));
+        SolidBrush trackBrush(Color(255, 40, 34, 26));
+        g.FillRectangle(&trackBrush, track);
+        if (g_progress > 0) {
+            RectF fill = track;
+            fill.Width = track.Width * static_cast<float>(std::min(g_progress, 100)) / 100.0f;
+            LinearGradientBrush fillBrush(PointF(track.X, 0), PointF(track.X + track.Width, 0), kEmberDark,
+                                          Color(255, 240, 170, 90));
+            g.FillRectangle(&fillBrush, fill);
+        }
+        DrawCentered(g, InfoLine(), *g_fonts.small, Scaled(RectF(30, 198, kWidth - 60, 20)), dim,
+                     StringTrimmingEllipsisPath);
+
+        // Buttons.
+        DrawButton(g, HitUpdate, L"Atualizar", false);
+        DrawButton(g, HitPlay, L"Iniciar jogo", true);
+        DrawButton(g, HitPassword, L"Senha do coop", false);
+
+        const bool linkEnabled = HitEnabled(HitFolder);
+        SolidBrush link(linkEnabled && g_hover == HitFolder ? kGold : Color(255, 112, 104, 90));
+        DrawCentered(g, L"Trocar pasta do jogo", *g_fonts.small, Scaled(kFolderLink), link);
+    }
+    BitBlt(target, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+}
+
+void Redraw() { InvalidateRect(g_wnd, nullptr, FALSE); }
+
+void SetStatus(const std::wstring& text, StatusKind kind) {
+    g_statusText = text;
+    g_statusKind = kind;
+    Redraw();
+}
+
+int HitTest(LPARAM lParam) {
+    const float s = Scale();
+    const PointF p(static_cast<float>(static_cast<short>(LOWORD(lParam))) / s,
+                   static_cast<float>(static_cast<short>(HIWORD(lParam))) / s);
+    for (int i = 0; i < 3; ++i)
+        if (kButtonRects[i].Contains(p)) return i;
+    if (kFolderLink.Contains(p)) return HitFolder;
+    return HitNone;
+}
+
+void UpdateEmbers() {
+    // Embers rise from the bottom edge and die out before reaching the buttons.
+    while (g_embers.size() < 18) {
+        Ember e{};
+        e.x = kWidth * 0.5f + (Rand01() - 0.5f) * 540.0f;
+        e.y = kHeight - 14.0f - Rand01() * 6.0f;
+        e.vx = (Rand01() - 0.5f) * 0.2f;
+        e.vy = -(0.25f + Rand01() * 0.45f);
+        e.maxLife = 50.0f + Rand01() * 70.0f;
+        e.life = Rand01() * 20.0f;
+        e.size = 1.4f + Rand01() * 1.4f;
+        e.phase = Rand01() * 6.28f;
+        g_embers.push_back(e);
+    }
+    for (Ember& e : g_embers) {
+        e.life += 1.0f;
+        e.x += e.vx + std::sin(e.life * 0.05f + e.phase) * 0.18f;
+        e.y += e.vy;
+    }
+    g_embers.erase(std::remove_if(g_embers.begin(), g_embers.end(),
+                                  [](const Ember& e) { return e.life >= e.maxLife || e.y < 12.0f; }),
+                   g_embers.end());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------------------------
+void StartUpdate(bool launchAfter) {
+    if (g_busy.exchange(true)) return;
+    g_progress = 0;
+    SetStatus(launchAfter ? L"Conferindo atualização antes de abrir o jogo..." : L"Procurando atualização...",
+              StatusKind::Normal);
+    std::thread(UpdateWorker, g_opt, launchAfter).detach();
+}
+
+void StartPlayWithoutUpdate() {
+    if (g_busy.exchange(true)) return;
+    SetStatus(L"Abrindo o jogo...", StatusKind::Normal);
+    std::thread(PlayWorker, g_opt.gameDir).detach();
+}
+
+void OpenPasswordFile() {
+    const std::wstring ini = Join(g_opt.gameDir, L"SeamlessCoop\\ds3sc_settings.ini");
+    if (!FileExists(ini)) {
+        MessageBoxW(g_wnd,
+                    L"Não achei o arquivo do Seamless Co-op:\nSeamlessCoop\\ds3sc_settings.ini\n\n"
+                    L"Confira se o Seamless Co-op está instalado na pasta do jogo.",
+                    kAppName, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    // Notepad: .ini files often have no app associated.
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(g_wnd, L"open", L"notepad.exe", Quote(ini).c_str(), nullptr,
+                                                SW_SHOWNORMAL)) <= 32)
+        ShellExecuteW(g_wnd, L"open", ini.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    SetStatus(L"Abri o ds3sc_settings.ini: a senha é a linha \"cooppassword\". Todo mundo precisa usar a mesma.",
+              StatusKind::Normal);
+}
+
+void OnClick(int hit) {
+    if (!HitEnabled(hit)) return;
+    switch (hit) {
+        case HitUpdate: StartUpdate(false); break;
+        case HitPlay: StartUpdate(true); break;
+        case HitPassword: OpenPasswordFile(); break;
+        case HitFolder:
+            if (ResolveGameDir(true)) StartUpdate(false);
+            break;
+        default: break;
+    }
+}
+
+void OnResult(ResultMsg* msg) {
+    const ResultMsg r = *msg;
+    delete msg;
+    g_busy = false;
+    switch (r.result) {
+        case Result::Launched:
+            g_progress = 100;
+            SetStatus(r.text.empty() ? L"Jogo aberto. Que a chama te guie!" : L"Jogo aberto. " + r.text,
+                      StatusKind::Success);
+            SetTimer(g_wnd, kCloseTimer, r.text.empty() ? 2500 : 8000, nullptr);
+            break;
+        case Result::Ready:
+            g_progress = 100;
+            SetStatus(r.text, StatusKind::Success);
+            if (g_opt.noLaunch) SetTimer(g_wnd, kCloseTimer, 800, nullptr);
+            break;
+        case Result::Restarted:
+            DestroyWindow(g_wnd);
+            break;
+        case Result::NeedElevation: {
+            SetStatus(L"Precisa de permissão de administrador para escrever na pasta do jogo...", StatusKind::Normal);
+            const std::wstring self = ExePath(), args = RestartArgs(g_opt.updated, r.launchAfter);
+            SHELLEXECUTEINFOW sei{};
+            sei.cbSize = sizeof(sei);
+            sei.lpVerb = L"runas";
+            sei.lpFile = self.c_str();
+            sei.lpParameters = args.c_str();
+            sei.nShow = SW_SHOWNORMAL;
+            if (ShellExecuteExW(&sei)) {
+                DestroyWindow(g_wnd);
+            } else {
+                g_exitCode = 1;
+                SetStatus(L"Sem permissão de administrador não dá para atualizar o mod nessa pasta.", StatusKind::Error);
+            }
+            break;
+        }
+        case Result::Error:
+        default:
+            g_progress = 0;
+            g_exitCode = 1;
+            SetStatus(r.text, StatusKind::Error);
+            if (g_opt.noLaunch) {
+                SetTimer(g_wnd, kCloseTimer, 800, nullptr);
+            } else if (r.launchAfter && r.networkError && FileExists(Join(g_opt.gameDir, kModDll))) {
+                if (MessageBoxW(g_wnd,
+                                L"Não consegui conferir se tem atualização (sem internet ou GitHub fora do ar).\n\n"
+                                L"Abrir o jogo com a versão do mod que já está instalada?",
+                                kAppName, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    g_exitCode = 0;
+                    StartPlayWithoutUpdate();
+                }
+            }
+            break;
+    }
+    Redraw();
+}
+
+void ApplyDarkTitleBar(HWND hwnd) {
+    const BOOL dark = TRUE;
+    DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
+    const COLORREF caption = RGB(22, 19, 15), text = RGB(201, 163, 92), border = RGB(66, 54, 38);
+    DwmSetWindowAttribute(hwnd, 35 /* DWMWA_CAPTION_COLOR */, &caption, sizeof(caption));
+    DwmSetWindowAttribute(hwnd, 36 /* DWMWA_TEXT_COLOR */, &text, sizeof(text));
+    DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_CREATE: {
+        case WM_CREATE:
             g_wnd = hwnd;
-            g_title = MakeControl(L"STATIC", kAppName, SS_LEFT, 20, 14, 440, 34, 0, g_titleFont);
-            g_status = MakeControl(L"STATIC", L"Iniciando...", SS_LEFT, 20, 54, 440, 46, 0, g_font);
-            g_progress = MakeControl(PROGRESS_CLASSW, L"", 0, 20, 104, 440, 16, 0, g_font);
-            SendMessageW(g_progress, PBM_SETRANGE32, 0, 100);
-            g_version = MakeControl(L"STATIC", L"", SS_LEFT | SS_PATHELLIPSIS, 20, 126, 440, 20, 0, g_smallFont);
-            g_btnRetry = MakeControl(L"BUTTON", L"Tentar de novo", BS_PUSHBUTTON, 20, 154, 130, 30, IdRetry, g_font);
-            g_btnPlay = MakeControl(L"BUTTON", L"Jogar sem atualizar", BS_PUSHBUTTON, 160, 154, 160, 30, IdPlay, g_font);
-            g_btnFolder = MakeControl(L"BUTTON", L"Trocar pasta", BS_PUSHBUTTON, 330, 154, 130, 30, IdFolder, g_font);
-            ShowButtons(false);
+            ApplyDarkTitleBar(hwnd);
+            SetTimer(hwnd, kAnimTimer, 33, nullptr);
             PostMessageW(hwnd, WM_APP_START, 0, 0);
             return 0;
-        }
         case WM_APP_START:
             if (!ResolveGameDir(false)) {
-                SetStatusText(L"Escolha a pasta do jogo para continuar.");
-                ShowButtons(true);
-                ShowWindow(g_btnRetry, SW_HIDE);
                 g_exitCode = 1;
+                SetStatus(L"Escolha a pasta do jogo para continuar (\"Trocar pasta do jogo\").", StatusKind::Error);
                 if (g_opt.noLaunch) DestroyWindow(hwnd);
                 return 0;
             }
             Log(L"Game folder: %ls", g_opt.gameDir.c_str());
-            StartUpdate();
+            StartUpdate(g_opt.play);
             return 0;
-        case WM_APP_STATUS: {
-            if (wParam != 0xFFFF) SendMessageW(g_progress, PBM_SETPOS, wParam, 0);
+        case WM_APP_STATUS:
+            if (wParam != 0xFFFF) g_progress = static_cast<int>(wParam);
             if (lParam) {
                 auto* text = reinterpret_cast<std::wstring*>(lParam);
-                SetStatusText(*text);
+                g_statusText = *text;
+                g_statusKind = StatusKind::Normal;
                 delete text;
             }
+            Redraw();
             return 0;
-        }
-        case WM_APP_RESULT: {
-            auto* text = reinterpret_cast<std::wstring*>(lParam);
-            const std::wstring message = text ? *text : std::wstring();
-            delete text;
-            g_busy = false;
-            UpdateVersionLabel();
-            switch (static_cast<Result>(wParam)) {
-                case Result::Launched:
-                    SetStatusText(message.empty() ? L"Jogo aberto. Bom jogo!" : L"Jogo aberto. " + message);
-                    SendMessageW(g_progress, PBM_SETPOS, 100, 0);
-                    SetTimer(hwnd, kCloseTimer, message.empty() ? 2500 : 8000, nullptr);
-                    break;
-                case Result::Ready:
-                    SetStatusText(message);
-                    SendMessageW(g_progress, PBM_SETPOS, 100, 0);
-                    SetTimer(hwnd, kCloseTimer, 800, nullptr);
-                    break;
-                case Result::Restarted:
-                    DestroyWindow(hwnd);
-                    break;
-                case Result::NeedElevation: {
-                    SetStatusText(L"Precisa de permissão de administrador para escrever na pasta do jogo...");
-                    const std::wstring self = ExePath(), args = RestartArgs(g_opt.updated);
-                    SHELLEXECUTEINFOW sei{};
-                    sei.cbSize = sizeof(sei);
-                    sei.lpVerb = L"runas";
-                    sei.lpFile = self.c_str();
-                    sei.lpParameters = args.c_str();
-                    sei.nShow = SW_SHOWNORMAL;
-                    if (ShellExecuteExW(&sei)) {
-                        DestroyWindow(hwnd);
-                    } else {
-                        SetStatusText(L"Sem permissão de administrador não dá para atualizar o mod nessa pasta.");
-                        g_exitCode = 1;
-                        ShowButtons(true);
-                    }
-                    break;
-                }
-                case Result::Error:
-                default:
-                    SetStatusText(message);
-                    SendMessageW(g_progress, PBM_SETPOS, 0, 0);
-                    g_exitCode = 1;
-                    ShowButtons(true);
-                    if (g_opt.noLaunch) SetTimer(hwnd, kCloseTimer, 800, nullptr);
-                    break;
-            }
+        case WM_APP_RESULT:
+            OnResult(reinterpret_cast<ResultMsg*>(lParam));
             return 0;
-        }
-        case WM_COMMAND:
-            switch (LOWORD(wParam)) {
-                case IdRetry:
-                    g_exitCode = 0;
-                    StartUpdate();
-                    break;
-                case IdPlay:
-                    if (!g_busy.exchange(true)) {
-                        ShowButtons(false);
-                        std::thread(PlayWorker, g_opt.gameDir).detach();
-                    }
-                    break;
-                case IdFolder:
-                    if (!g_busy && ResolveGameDir(true)) {
-                        g_exitCode = 0;
-                        StartUpdate();
-                    }
-                    break;
-            }
-            return 0;
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            if (reinterpret_cast<HWND>(lParam) == g_version) SetTextColor(dc, RGB(110, 110, 110));
-            if (reinterpret_cast<HWND>(lParam) == g_title) SetTextColor(dc, RGB(120, 70, 20));
-            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
-        }
         case WM_TIMER:
-            if (wParam == kCloseTimer) DestroyWindow(hwnd);
+            if (wParam == kCloseTimer) {
+                DestroyWindow(hwnd);
+            } else if (wParam == kAnimTimer && !IsIconic(hwnd)) {
+                UpdateEmbers();
+                Redraw();
+            }
             return 0;
+        case WM_MOUSEMOVE: {
+            if (!g_tracking) {
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+                g_tracking = TrackMouseEvent(&tme) != FALSE;
+            }
+            const int hit = HitTest(lParam);
+            if (hit != g_hover) {
+                g_hover = hit;
+                Redraw();
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            g_tracking = false;
+            g_hover = HitNone;
+            g_pressed = HitNone;
+            Redraw();
+            return 0;
+        case WM_LBUTTONDOWN:
+            g_pressed = HitTest(lParam);
+            SetCapture(hwnd);
+            Redraw();
+            return 0;
+        case WM_LBUTTONUP: {
+            ReleaseCapture();
+            const int hit = HitTest(lParam);
+            const int pressed = g_pressed;
+            g_pressed = HitNone;
+            Redraw();
+            if (hit != HitNone && hit == pressed) OnClick(hit);
+            return 0;
+        }
+        case WM_SETCURSOR:
+            if (LOWORD(lParam) == HTCLIENT) {
+                POINT p;
+                GetCursorPos(&p);
+                ScreenToClient(hwnd, &p);
+                const int hit = HitTest(MAKELPARAM(p.x, p.y));
+                SetCursor(LoadCursorW(nullptr, hit != HitNone && HitEnabled(hit) ? IDC_HAND : IDC_ARROW));
+                return TRUE;
+            }
+            break;
+        case WM_KEYDOWN:
+            if (wParam == VK_RETURN) OnClick(HitPlay);
+            else if (wParam == VK_ESCAPE) DestroyWindow(hwnd);
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            Paint(dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         case WM_DESTROY:
+            KillTimer(hwnd, kAnimTimer);
             PostQuitMessage(g_exitCode);
             return 0;
     }
@@ -904,7 +1287,9 @@ void ParseArgs() {
             g_opt.customSource = true;
         } else if (a == L"--no-launch") g_opt.noLaunch = true;
         else if (a == L"--updated") g_opt.updated = true;
+        else if (a == L"--play") g_opt.play = true;
     }
+    if (g_opt.noLaunch) g_opt.play = false;
     LocalFree(argv);
 }
 
@@ -913,15 +1298,15 @@ void ParseArgs() {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ParseArgs();
     g_log = _wfopen(Join(DirOf(ExePath()), L"DS3CoopLauncher.log").c_str(), L"w, ccs=UTF-8");
-    Log(L"DS3 Coop Launcher, exe=%ls", ExePath().c_str());
+    Log(L"DS3 Moraes e amigos launcher %ls, exe=%ls", kLauncherVersion, ExePath().c_str());
 
     // Leftover from a self-update: the old exe may still be closing.
     const std::wstring old = ExePath() + L".old";
     for (int i = 0; i < 20 && FileExists(old) && !DeleteFileW(old.c_str()); ++i) Sleep(100);
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES};
-    InitCommonControlsEx(&icc);
+    GdiplusStartupInput gdiplusInput;
+    GdiplusStartup(&g_gdiplusToken, &gdiplusInput, nullptr);
     g_dpi = static_cast<int>(GetDpiForSystem());
     CreateFonts();
 
@@ -930,18 +1315,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wc.lpszClassName = L"DS3CoopLauncher";
+    wc.hbrBackground = nullptr;
+    wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.lpszClassName = L"DS3MoraesLauncher";
     RegisterClassExW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT rc{0, 0, S(480), S(200)};
+    const float s = Scale();
+    RECT rc{0, 0, static_cast<LONG>(kWidth * s), static_cast<LONG>(kHeight * s)};
     AdjustWindowRect(&rc, style, FALSE);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"DS3 Coop Mod - Launcher", style,
-                                (GetSystemMetrics(SM_CXSCREEN) - w) / 2, (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h,
-                                nullptr, nullptr, instance, nullptr);
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, kAppName, style, (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
+                                (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h, nullptr, nullptr, instance, nullptr);
     if (!hwnd) return 1;
     ShowWindow(hwnd, g_opt.noLaunch ? SW_SHOWMINNOACTIVE : show);
     UpdateWindow(hwnd);
@@ -951,6 +1337,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    g_fonts = Fonts{};
+    GdiplusShutdown(g_gdiplusToken);
     if (g_log) std::fclose(g_log);
     CoUninitialize();
     return static_cast<int>(msg.wParam);

@@ -55,9 +55,11 @@ else()
 endif()
 
 # --- Launcher for friends: DS3CoopLauncher.exe -----------------------------------------------
+set(DS3_BUILD_VERSION "dev" CACHE STRING "Version shown by the launcher (CI sets build-<number>)")
 add_executable(DS3CoopLauncher WIN32 launcher/main.cpp launcher/launcher.rc)
-target_compile_definitions(DS3CoopLauncher PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0A00)
-target_link_libraries(DS3CoopLauncher PRIVATE winhttp bcrypt comctl32 shell32 ole32 uuid version)
+target_compile_definitions(DS3CoopLauncher PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0A00
+                           DS3_BUILD_VERSION="${DS3_BUILD_VERSION}")
+target_link_libraries(DS3CoopLauncher PRIVATE winhttp bcrypt gdiplus dwmapi shell32 ole32 uuid version)
 if(MSVC)
     target_compile_options(DS3CoopLauncher PRIVATE /utf-8 /W3)
 else()

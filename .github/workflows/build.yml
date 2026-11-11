@@ -28,7 +28,7 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDS3_BUILD_VERSION=build-${{ github.run_number }}
           cmake --build build
       - name: Package
         shell: pwsh
