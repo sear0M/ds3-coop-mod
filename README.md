@@ -73,6 +73,8 @@ fix_sprint = 1    ; corrige a corrida mais lenta acima de ~82 FPS
 ```
 
 - **Tela cheia sem borda:** coloque o jogo em **Janela** nas opções de vídeo do DS3, de preferência com a resolução do seu monitor. O mod tira a borda e estica a janela para o monitor inteiro, e o Alt+Tab fica instantâneo.
+  - Até a build-8 o jogo fechava sozinho alguns segundos depois de abrir em modo Janela, porque reagia mal ao redimensionamento feito pelo mod. Agora o jogo não fica sabendo do redimensionamento: a imagem dele é só esticada para a janela nova.
+  - Trava de segurança: se o jogo fechar logo depois de ficar sem borda, na próxima vez que abrir o mod desliga essa opção sozinho (`borderless = 0`) e o jogo abre com borda. Para tentar de novo, volte para `borderless = 1`. O motivo fica anotado no `ds3coopmod.log`.
 - **FPS:** o DS3 tem um limitador de FPS de depuração escondido. O mod só liga ele com o valor escolhido, sem alterar o código do jogo. Acima de ~82 FPS o personagem corria mais devagar, e o `fix_sprint` corrige isso.
 - Mudou alguma coisa? Feche e abra o jogo de novo.
 - O jogo foi feito para 60 FPS. Se notar alguma física estranha num FPS muito alto, teste 120 ou volte para 60.

@@ -30,4 +30,9 @@ void OnPresent(IDXGISwapChain* swapChain);
 // Called from the game window procedure hook. Returns true when the message was ours.
 bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+// Called from the game window procedure hook. True while the mod itself is making the window
+// borderless: the message must go to DefWindowProc, not to the game (DS3 crashes when it reacts to
+// that resize while loading).
+bool HideFromGame(HWND hwnd);
+
 }  // namespace video

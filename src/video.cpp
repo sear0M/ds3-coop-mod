@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -71,6 +72,23 @@ std::atomic<HWND> g_window{nullptr};
 std::atomic<bool> g_windowed{false};  // the swap chain is not exclusive fullscreen
 std::atomic<bool> g_applyPending{false};
 unsigned g_frame = 0;
+
+// While ApplyBorderless runs, every message the restyle/resize sends to the game window goes to
+// DefWindowProc instead of the game. DS3 crashed (access violation in d3d11.dll on its main thread)
+// when it handled the WM_SIZE etc. of our resize in the middle of loading; if it never hears about
+// it, its swap chain keeps its size and DXGI stretches the image to the new client area.
+bool g_hiding = false;  // window thread only
+unsigned g_hidden = 0;
+
+// Crash guard. A marker file exists from the moment the window is made borderless until the game
+// has kept running for a while. If the game starts and finds it, the last run died right after
+// going borderless: borderless is turned off (borderless = 0 written to ds3coopmod.ini), so a
+// broken borderless costs at most one crash.
+std::wstring g_guardPath;
+std::atomic<ULONGLONG> g_guardSince{0};  // GetTickCount64() of the last borderless change, 0 = disarmed
+std::atomic<unsigned> g_guardFrames{0};
+ULONGLONG g_guardMs = 20000;  // DS3COOPMOD_GUARD_MS overrides it (tests)
+constexpr unsigned kGuardFrames = 120;
 
 void ModuleRange() {
     g_moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
@@ -215,19 +233,49 @@ bool ShouldForce(HWND hwnd) {
     return g_borderless && hwnd && hwnd == g_window.load() && g_windowed && !IsIconic(hwnd);
 }
 
+void ArmGuard() {
+    if (!g_guardSince.load() && !g_guardPath.empty()) {
+        if (FILE* f = _wfopen(g_guardPath.c_str(), L"wb")) {
+            std::fputs("Se este arquivo existir quando o jogo abrir, o jogo fechou logo depois de ficar sem borda, "
+                       "e o mod desliga a tela sem borda (borderless = 0 no ds3coopmod.ini).\r\n",
+                       f);
+            std::fclose(f);
+        }
+    }
+    g_guardFrames = 0;
+    g_guardSince = std::max<ULONGLONG>(GetTickCount64(), 1);
+}
+
+void CheckGuard() {
+    const ULONGLONG since = g_guardSince.load();
+    if (!since) return;
+    const unsigned frames = ++g_guardFrames;
+    if (frames < kGuardFrames || GetTickCount64() - since < g_guardMs) return;
+    g_guardSince = 0;
+    DeleteFileW(g_guardPath.c_str());
+    LOG("Borderless: OK, the game kept running (%u frames)", frames);
+}
+
 // Runs on the window's own thread (posted from the Present hook) to avoid cross-thread deadlocks.
 void ApplyBorderless(HWND hwnd) {
     if (!ShouldForce(hwnd) || !o_SetWindowLongW || !o_SetWindowPos) return;
     const LONG style = GetWindowLongW(hwnd, GWL_STYLE);
     const RECT target = MonitorRect(hwnd);
-    RECT now{};
+    RECT now{}, client{};
     GetWindowRect(hwnd, &now);
+    GetClientRect(hwnd, &client);
     if (style == BorderlessStyle(style) && EqualRect(&now, &target)) return;
+    LOG("Borderless: applying (window %ldx%ld, client %ldx%ld, style 0x%08lX)", now.right - now.left,
+        now.bottom - now.top, client.right, client.bottom, static_cast<unsigned long>(style));
+    ArmGuard();
+    g_hiding = true;
+    g_hidden = 0;
     o_SetWindowLongW(hwnd, GWL_STYLE, BorderlessStyle(style));
     o_SetWindowPos(hwnd, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top,
                    SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
-    LOG("Borderless: window set to %ldx%ld at %ld,%ld", target.right - target.left, target.bottom - target.top,
-        target.left, target.top);
+    g_hiding = false;
+    LOG("Borderless: window set to %ldx%ld at %ld,%ld (%u window messages kept from the game)",
+        target.right - target.left, target.bottom - target.top, target.left, target.top, g_hidden);
 }
 
 // The game resets its window style/size when the resolution or mode changes: keep it borderless.
@@ -303,6 +351,20 @@ void LoadConfig(const std::wstring& modDir) {
     g_fixSprint = GetPrivateProfileIntW(L"Video", L"fix_sprint", 1, ini.c_str()) != 0;
     LOG("Video settings: fps_limit=%d borderless=%d fix_sprint=%d", g_fpsSetting, g_borderless ? 1 : 0,
         g_fixSprint ? 1 : 0);
+
+    g_guardPath = modDir + L"\\ds3coopmod_borderless.check";
+    wchar_t guardMs[32] = {};
+    if (GetEnvironmentVariableW(L"DS3COOPMOD_GUARD_MS", guardMs, 32) && _wtoi(guardMs) > 0)
+        g_guardMs = static_cast<ULONGLONG>(_wtoi(guardMs));
+    if (GetFileAttributesW(g_guardPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(g_guardPath.c_str());
+        if (g_borderless) {
+            g_borderless = false;
+            WritePrivateProfileStringW(L"Video", L"borderless", L"0", ini.c_str());
+            LOG("Borderless: the game closed right after the window went borderless last time; turned it off "
+                "(borderless = 0 in ds3coopmod.ini)");
+        }
+    }
 }
 
 void Start(HWND gameWindow, bool gamePatches) {
@@ -328,6 +390,7 @@ void Start(HWND gameWindow, bool gamePatches) {
 
 void OnPresent(IDXGISwapChain* swapChain) {
     UpdateSpeedFactors();
+    CheckGuard();
     if (!g_borderless || (++g_frame % 30) != 0) return;
     DXGI_SWAP_CHAIN_DESC desc{};
     if (FAILED(swapChain->GetDesc(&desc)) || !desc.OutputWindow) return;
@@ -348,6 +411,12 @@ bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM, LPARAM) {
     if (msg != kApplyBorderlessMsg) return false;
     g_applyPending = false;
     ApplyBorderless(hwnd);
+    return true;
+}
+
+bool HideFromGame(HWND hwnd) {
+    if (!g_hiding || hwnd != g_window.load()) return false;
+    ++g_hidden;
     return true;
 }
 

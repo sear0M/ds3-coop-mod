@@ -96,14 +96,38 @@ struct Step {
     void (*run)(HWND);
 };
 
+// Like the game's window procedure: counts the messages that tell it the window changed size,
+// position or style once the window is set up. DS3 crashed when it handled the ones caused by the
+// mod's borderless resize, so the mod must change the window without the "game" seeing any of
+// them. A WM_WINDOWPOSCHANGED with SWP_NOSIZE | SWP_NOMOVE (Windows refreshing the frame after a
+// style change, no WM_SIZE follows) changes nothing and is only printed.
+bool g_countResize = false;
+int g_resizeSeen = 0;
+
+LRESULT CALLBACK GameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_countResize && (msg == WM_SIZE || msg == WM_MOVE || msg == WM_WINDOWPOSCHANGED || msg == WM_STYLECHANGED)) {
+        const UINT flags = msg == WM_WINDOWPOSCHANGED ? reinterpret_cast<const WINDOWPOS*>(lParam)->flags : 0;
+        const bool noChange = msg == WM_WINDOWPOSCHANGED && (flags & (SWP_NOSIZE | SWP_NOMOVE)) == (SWP_NOSIZE | SWP_NOMOVE);
+        if (!noChange) ++g_resizeSeen;
+        std::printf("game got message 0x%04X flags=0x%X%s\n", msg, flags, noChange ? " (no size/position change)" : "");
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    const char* password = argc > 1 ? argv[1] : "";
+    // Arguments: [password] [borderless], in any order (PowerShell 5.1 drops an empty password).
+    const char* password = "";
+    bool borderlessTest = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "borderless") borderlessTest = true;
+        else password = argv[i];
+    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = DefWindowProcW;
+    wc.lpfnWndProc = GameWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"HarnessWindow";
     RegisterClassExW(&wc);
@@ -146,7 +170,6 @@ int main(int argc, char** argv) {
     static std::string s_password = password;
     // "borderless" mode: the mod should turn this window into a borderless window covering the
     // monitor while the back buffer stays 1280x720; the menu must still be centered and sized right.
-    const bool borderlessTest = argc > 2 && std::string(argv[2]) == "borderless";
     const Step borderlessSteps[] = {
         {4.2, [](HWND h) {
              RECT r{};
@@ -155,10 +178,12 @@ int main(int argc, char** argv) {
              std::printf("window style=0x%08lX caption=%d rect=%ld,%ld %ldx%ld screen=%dx%d\n", style,
                          (style & WS_CAPTION) == WS_CAPTION ? 1 : 0, r.left, r.top, r.right - r.left, r.bottom - r.top,
                          GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+             std::printf("game saw %d resize messages\n", g_resizeSeen);
          }},
         {4.3, [](HWND h) { Key(h, VK_INSERT); }},
         {4.9, [](HWND) { SaveBackBuffer("b_senha.bmp"); }},
-        {5.1, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
+        // Late enough for the mod's crash guard (DS3COOPMOD_GUARD_MS from run_harness.ps1) to clear.
+        {6.0, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
     const Step menuSteps[] = {
         {4.0, [](HWND h) { Key(h, VK_INSERT); }},
@@ -187,6 +212,7 @@ int main(int argc, char** argv) {
     const size_t stepCount = borderlessTest ? sizeof(borderlessSteps) / sizeof(Step) : sizeof(menuSteps) / sizeof(Step);
     size_t next = 0;
 
+    g_countResize = true;
     const ULONGLONG start = GetTickCount64();
     bool running = true;
     while (running) {

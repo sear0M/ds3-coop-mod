@@ -194,6 +194,7 @@ bool IsInputMessage(UINT msg) {
 
 LRESULT CALLBACK WndProcHook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (video::OnWindowMessage(hwnd, msg, wParam, lParam)) return 0;
+    if (video::HideFromGame(hwnd)) return DefWindowProcW(hwnd, msg, wParam, lParam);
     const bool keyDown = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     const bool firstPress = !(lParam & (1 << 30));
     if (keyDown && firstPress && wParam == menu::kToggleKey) {
