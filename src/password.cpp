@@ -11,7 +11,12 @@ namespace {
 
 // SHA-256 of the menu password, lowercase hex. To change the password, put the new hash here:
 //   PowerShell:  (Get-FileHash -Algorithm SHA256 -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('NOVA_SENHA')))).Hash.ToLower()
+#ifdef DS3_HARNESS_PASSWORD_SHA256
+// Test build from tests/run_harness.ps1 (see CMakeLists.txt), never shipped.
+constexpr const char* kPasswordSha256 = DS3_HARNESS_PASSWORD_SHA256;
+#else
 constexpr const char* kPasswordSha256 = "d7ff1abfe9621fb0924da85f3cc4863ad47329b3dfde8ada62ea889747168e9b";
+#endif
 
 bool Sha256Hex(const std::string& input, char out[65]) {
     BCRYPT_ALG_HANDLE alg = nullptr;

@@ -1,7 +1,8 @@
 // Test harness: a tiny D3D11 app that pretends to be DarkSoulsIII.exe so the mod (dinput8.dll)
 // loads into it. It opens the menu with Insert, types the password, clicks around and saves
-// screenshots of what the mod drew. No game is needed; game-specific features (giving items)
-// correctly refuse to run because the harness is not version 1.15.2.
+// screenshots of what the mod drew. No game is needed; game-specific features (giving items,
+// "Voltar para a fogueira", "Sair para o menu") correctly refuse to run because the harness is
+// not version 1.15.2.
 //
 // Build + run: powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1
 
@@ -185,28 +186,37 @@ int main(int argc, char** argv) {
         // Late enough for the mod's crash guard (DS3COOPMOD_GUARD_MS from run_harness.ps1) to clear.
         {6.0, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
+    // Coordinates match the 1280x720 layout seen in the screenshots (01_senha.png, 05_itens.png).
     const Step menuSteps[] = {
         {4.0, [](HWND h) { Key(h, VK_INSERT); }},
-        {4.6, [](HWND) { SaveBackBuffer("1_senha.bmp"); }},
-        {4.8, [](HWND h) { Type(h, "senha-errada"); Key(h, VK_RETURN); }},
-        {5.3, [](HWND) { SaveBackBuffer("2_senha_errada.bmp"); }},
-        {5.5, [](HWND h) { Type(h, s_password.c_str()); Key(h, VK_RETURN); }},
-        {6.2, [](HWND) { SaveBackBuffer("3_itens.bmp"); }},
-        // Coordinates match the 1280x720 layout seen in 3_itens.png.
-        {6.4, [](HWND h) { Click(h, 210, 254); }},  // "Sets de armadura"
-        {7.0, [](HWND) { SaveBackBuffer("4_sets.bmp"); }},
-        {7.2, [](HWND h) { Click(h, 1010, 155); }},  // "Adicionar set" on the first set
-        {7.8, [](HWND) { SaveBackBuffer("5_dar_item.bmp"); }},
-        {8.0, [](HWND h) { Click(h, 290, 97); }},  // search box
-        {8.3, [](HWND h) { Type(h, "moon"); }},
-        {8.9, [](HWND) { SaveBackBuffer("6_busca.bmp"); }},
-        {9.1, [](HWND h) { Click(h, 1078, 641); }},  // "Sair para o menu"
-        {9.7, [](HWND) { SaveBackBuffer("7_sair_confirmar.bmp"); }},
-        {9.9, [](HWND h) { Click(h, 500, 411); }},  // "Sair" (refused: not the real game)
-        {10.5, [](HWND) { SaveBackBuffer("8_sair_recusado.bmp"); }},
-        {10.7, [](HWND h) { Key(h, VK_INSERT); }},
-        {11.3, [](HWND) { SaveBackBuffer("9_fechado.bmp"); }},
-        {11.5, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
+        {4.6, [](HWND) { SaveBackBuffer("01_senha.bmp"); }},
+        // "Voltar para a fogueira" needs no password, so friends use it from this screen.
+        {4.8, [](HWND h) { Click(h, 640, 404); }},
+        {5.4, [](HWND) { SaveBackBuffer("02_fogueira_confirmar.bmp"); }},
+        {5.6, [](HWND h) { Click(h, 508, 411); }},  // "Voltar" (refused: not the real game)
+        {6.2, [](HWND) { SaveBackBuffer("03_fogueira_recusado.bmp"); }},
+        {6.4, [](HWND h) { Click(h, 640, 336); }},  // password box
+        {6.6, [](HWND h) { Type(h, "senha-errada"); Key(h, VK_RETURN); }},
+        {7.1, [](HWND) { SaveBackBuffer("04_senha_errada.bmp"); }},
+        {7.3, [](HWND h) { Type(h, s_password.c_str()); Key(h, VK_RETURN); }},
+        {8.0, [](HWND) { SaveBackBuffer("05_itens.bmp"); }},
+        {8.2, [](HWND h) { Click(h, 210, 254); }},  // "Sets de armadura"
+        {8.8, [](HWND) { SaveBackBuffer("06_sets.bmp"); }},
+        {9.0, [](HWND h) { Click(h, 1010, 155); }},  // "Adicionar set" on the first set
+        {9.6, [](HWND) { SaveBackBuffer("07_dar_item.bmp"); }},
+        {9.8, [](HWND h) { Click(h, 290, 97); }},  // search box
+        {10.1, [](HWND h) { Type(h, "moon"); }},
+        {10.7, [](HWND) { SaveBackBuffer("08_busca.bmp"); }},
+        {10.9, [](HWND h) { Click(h, 958, 641); }},  // "Voltar para a fogueira" in the footer
+        {11.5, [](HWND) { SaveBackBuffer("09_fogueira_rodape.bmp"); }},
+        {11.7, [](HWND h) { Click(h, 611, 411); }},  // "Cancelar"
+        {11.9, [](HWND h) { Click(h, 1078, 641); }},  // "Sair para o menu"
+        {12.5, [](HWND) { SaveBackBuffer("10_sair_confirmar.bmp"); }},
+        {12.7, [](HWND h) { Click(h, 508, 411); }},  // "Sair" (refused: not the real game)
+        {13.3, [](HWND) { SaveBackBuffer("11_sair_recusado.bmp"); }},
+        {13.5, [](HWND h) { Key(h, VK_INSERT); }},
+        {14.1, [](HWND) { SaveBackBuffer("12_fechado.bmp"); }},
+        {14.3, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
     const Step* steps = borderlessTest ? borderlessSteps : menuSteps;
     const size_t stepCount = borderlessTest ? sizeof(borderlessSteps) / sizeof(Step) : sizeof(menuSteps) / sizeof(Step);
@@ -230,7 +240,7 @@ int main(int argc, char** argv) {
         g_context->ClearRenderTargetView(g_rtv, color);
         g_swapChain->Present(1, 0);
         while (next < stepCount && t >= steps[next].at) steps[next++].run(hwnd);
-        if (t > 14.0) break;
+        if (t > 17.0) break;
     }
     std::printf("done\n");
     return 0;

@@ -37,10 +37,13 @@ int g_infusion = 0;
 std::string g_status = "Clique em um item para colocá-lo no seu inventário.";
 bool g_statusError = false;
 
-// "Sair para o menu" error shown on the password screen (the item window uses g_status).
-std::string g_quitError;
+// Error from "Sair para o menu" / "Voltar para a fogueira" shown on the password screen (the
+// item window uses g_status).
+std::string g_actionError;
 constexpr const char* kQuitPopup = "Sair para o menu?";
 constexpr const char* kQuitLabel = "Sair para o menu";
+constexpr const char* kBonfirePopup = "Voltar para a fogueira?";
+constexpr const char* kBonfireLabel = "Voltar para a fogueira";
 
 struct Infusion {
     const char* name;
@@ -142,28 +145,26 @@ void QuitButton(float width) {
                           "Use quando um boss travar sem barra de vida.");
 }
 
-// Confirmation for QuitButton. Returns 1 when the game is quitting, -1 on error (in error),
-// 0 otherwise.
-int QuitPopup(std::string& error) {
+// Centered yes/no popup for the buttons above. Runs action on yes. Returns 1 when the action ran,
+// -1 when it failed (message in error), 0 otherwise.
+int ConfirmPopup(const char* id, const std::string& text, const char* note, const char* okLabel,
+                 bool (*action)(std::string&), std::string& error) {
     int result = 0;
     ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal(kQuitPopup, nullptr,
+    if (ImGui::BeginPopupModal(id, nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
                                    ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
-        ImGui::TextUnformatted("Voltar para a tela de título? É o mesmo que \"Sair do jogo\" no menu do DS3, "
-                               "o progresso fica salvo.");
+        ImGui::TextUnformatted(text.c_str());
         ImGui::Spacing();
-        ImGui::TextColored(kDim,
-                           "Boss travado sem barra de vida? Quem está hospedando sai e carrega o personagem "
-                           "de novo, e a área volta ao normal.");
+        ImGui::TextColored(kDim, "%s", note);
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         const float width = ImGui::GetFontSize() * 6.0f;
-        if (ImGui::Button("Sair", ImVec2(width, 0.0f))) {
-            result = game::QuitToMenu(error) ? 1 : -1;
+        if (ImGui::Button(okLabel, ImVec2(width, 0.0f))) {
+            result = action(error) ? 1 : -1;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -171,6 +172,43 @@ int QuitPopup(std::string& error) {
         ImGui::EndPopup();
     }
     return result;
+}
+
+// Confirmation for QuitButton.
+int QuitPopup(std::string& error) {
+    return ConfirmPopup(kQuitPopup,
+                        "Voltar para a tela de título? É o mesmo que \"Sair do jogo\" no menu do DS3, "
+                        "o progresso fica salvo.",
+                        "Boss travado sem barra de vida? Quem está hospedando sai e carrega o personagem de novo, "
+                        "e a área volta ao normal.",
+                        "Sair", game::QuitToMenu, error);
+}
+
+// Button that sends you to the last bonfire you rested at, like a Homeward Bone. The game refuses
+// the Bone while other players are in your world, which in Seamless Co-op is always. This goes
+// through the bonfire "Travel" code instead, the same thing the game runs when you pick a bonfire
+// in that menu. Whether Seamless pulls the guests along when the host does it is not documented,
+// so the text tells everyone to press their own button if the group does not follow.
+void BonfireButton(float width) {
+    if (ImGui::Button(kBonfireLabel, ImVec2(width, 0.0f))) ImGui::OpenPopup(kBonfirePopup);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Volta para a última fogueira em que você descansou, igual ao Homeward Bone.\n"
+                          "É a mesma viagem do menu \"Viajar\" da fogueira.");
+}
+
+// Confirmation for BonfireButton, naming the bonfire.
+int BonfirePopup(std::string& error) {
+    if (!ImGui::IsPopupOpen(kBonfirePopup)) return 0;
+    const int id = game::LastBonfire();
+    const char* name = id > 0 ? game::BonfireName(id) : nullptr;
+    std::string text = "Voltar para a última fogueira em que você descansou";
+    if (name) text += std::string(" (") + name + ")";
+    else if (id > 0) text += " (fogueira " + std::to_string(id) + ")";
+    text += "? É o mesmo que usar um Homeward Bone.";
+    return ConfirmPopup(kBonfirePopup, text,
+                        "Em coop: o host aperta primeiro. Se o grupo não for junto, cada um aperta o seu. "
+                        "Não use no meio de luta de boss.",
+                        "Voltar", game::WarpToLastBonfire, error);
 }
 
 void ItemRow(const items::Item& item, items::Kind kind) {
@@ -264,17 +302,23 @@ void RenderPassword() {
         ImGui::SameLine();
         if (ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f))) open = false;
     }
-    // Quitting needs no password: it is the same as the game's own "Quit Game".
+    // These need no password: they are the same as the game's own "Quit Game" and Homeward Bone.
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
+    BonfireButton(-1.0f);
     QuitButton(-1.0f);
-    if (!g_quitError.empty()) ImGui::TextColored(kRed, "%s", g_quitError.c_str());
+    if (!g_actionError.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(kRed, "%s", g_actionError.c_str());
+        ImGui::PopTextWrapPos();
+    }
     std::string error;
+    const int bonfire = BonfirePopup(error);
     const int quit = QuitPopup(error);
-    if (quit != 0) g_quitError = error;
+    if (bonfire != 0 || quit != 0) g_actionError = error;
     ImGui::End();
-    if (!open || quit > 0) Close();
+    if (!open || bonfire > 0 || quit > 0) Close();
 }
 
 void RenderItems() {
@@ -337,10 +381,13 @@ void RenderItems() {
     }
     ImGui::EndChild();
 
-    // Footer: status, then the game state hint with "Sair para o menu" on the right.
+    // Footer: status, then the game state hint with "Voltar para a fogueira" and "Sair para o menu"
+    // on the right.
     ImGui::TextColored(g_statusError ? kRed : kGreen, "%s", g_status.c_str());
     const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const float quitWidth = ImGui::CalcTextSize(kQuitLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float padding = ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float quitWidth = ImGui::CalcTextSize(kQuitLabel).x + padding;
+    const float bonfireWidth = ImGui::CalcTextSize(kBonfireLabel).x + padding;
     ImGui::AlignTextToFramePadding();
     if (!game::VersionOk())
         ImGui::TextColored(kRed, "Versão do jogo %s não suportada (precisa ser 1.15.2).", game::VersionText().c_str());
@@ -348,15 +395,19 @@ void RenderItems() {
         ImGui::TextColored(kGold, "Fora do jogo: carregue um personagem para receber itens.");
     else
         ImGui::TextColored(kDim, "Os itens vão só para o seu inventário.  Insert ou Esc fecha.");
-    ImGui::SameLine(right - quitWidth);
+    ImGui::SameLine(right - quitWidth - ImGui::GetStyle().ItemSpacing.x - bonfireWidth);
+    BonfireButton(0.0f);
+    ImGui::SameLine();
     QuitButton(0.0f);
     std::string error;
+    const int bonfire = BonfirePopup(error);
     const int quit = QuitPopup(error);
-    if (quit > 0) SetStatus("Saindo para o menu...", false);
-    else if (quit < 0) SetStatus(error, true);
+    if (bonfire > 0) SetStatus("Voltando para a fogueira...", false);
+    else if (quit > 0) SetStatus("Saindo para o menu...", false);
+    else if (bonfire < 0 || quit < 0) SetStatus(error, true);
 
     ImGui::End();
-    if (!open || quit > 0) Close();
+    if (!open || bonfire > 0 || quit > 0) Close();
 }
 
 }  // namespace

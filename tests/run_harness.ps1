@@ -1,6 +1,10 @@
 # Builds the mod and the test harness, runs the harness with the mod loaded and converts the
 # screenshots to PNG in build\harness\.
+#   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1
+#     (menu test; without -Password it uses a test build of the mod with a test password, so it
+#      still reaches the item window. That test build lives in build\harness-mod, never ship it.)
 #   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Password "<senha>"
+#     (menu test with the real build\dinput8.dll and the real password)
 #   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Borderless
 #     (the test window covers the screen for ~6 seconds, twice)
 param([string]$Password = '', [switch]$Borderless)
@@ -12,6 +16,22 @@ Set-Location $root
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release | Out-Null
 cmake --build build
 if ($LASTEXITCODE -ne 0) { throw 'mod build failed' }
+$dll = 'build\dinput8.dll'
+
+if (-not $Borderless -and -not $Password) {
+    $Password = 'teste-do-harness'
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Password)) | ForEach-Object { $_.ToString('x2') })
+    # The configure prints a CMake warning on purpose (this dll has the test password). PowerShell
+    # 5.1 turns that stderr text into an error, so let it through while configuring.
+    $ErrorActionPreference = 'Continue'
+    cmake -S . -B build\harness-mod -G Ninja -DCMAKE_BUILD_TYPE=Release "-DDS3_HARNESS_PASSWORD_SHA256=$hash" *> $null
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -ne 0) { throw 'test mod configure failed' }
+    cmake --build build\harness-mod --target dinput8
+    if ($LASTEXITCODE -ne 0) { throw 'test mod build failed' }
+    $dll = 'build\harness-mod\dinput8.dll'
+}
 
 $out = Join-Path $root 'build\harness'
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -19,7 +39,7 @@ Remove-Item "$out\*" -Force -ErrorAction SilentlyContinue
 # The harness must be called DarkSoulsIII.exe: the mod only starts inside a process with that name.
 g++ -std=c++17 -O1 tests\harness.cpp -o "$out\DarkSoulsIII.exe" -ld3d11 -ldinput8 -static
 if ($LASTEXITCODE -ne 0) { throw 'harness build failed' }
-Copy-Item build\dinput8.dll $out
+Copy-Item $dll $out
 # Mod settings for the run: borderless only when asked (it covers the whole screen).
 $b = if ($Borderless) { 1 } else { 0 }
 Set-Content "$out\ds3coopmod.ini" "[Video]`r`nfps_limit = 0`r`nborderless = $b`r`nfix_sprint = 1" -Encoding ascii
@@ -53,7 +73,14 @@ try {
         Check (-not (Test-Path ds3coopmod_borderless.check)) 'crash guard: file removed'
         Remove-Item Env:\DS3COOPMOD_GUARD_MS
     } else {
-        & .\DarkSoulsIII.exe $Password
+        $run = & .\DarkSoulsIII.exe $Password | Out-String
+        Write-Host $run
+        $log = Get-Content ds3coopmod.log -Raw
+        Check ($run -match 'done') 'menu: the harness ran to the end'
+        # Pressed once on the password screen (no password needed); the footer one is cancelled.
+        $refused = ([regex]::Matches($log, 'Bonfire warp refused: version')).Count
+        Check ($refused -eq 1) "fogueira: refused once outside the real game (got $refused)"
+        Check ($log -match 'Menu unlocked') 'menu: the password opened the item window'
     }
 } finally { Pop-Location }
 
@@ -65,4 +92,4 @@ Get-ChildItem "$out\*.bmp" | ForEach-Object {
     Remove-Item $_.FullName
 }
 Get-Content "$out\ds3coopmod.log"
-if ($failures.Count) { throw "$($failures.Count) borderless check(s) failed" }
+if ($failures.Count) { throw "$($failures.Count) check(s) failed" }

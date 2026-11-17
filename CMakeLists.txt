@@ -46,6 +46,15 @@ set_target_properties(dinput8 PROPERTIES PREFIX "" OUTPUT_NAME "dinput8")
 target_compile_definitions(dinput8 PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(dinput8 PRIVATE imgui minhook d3d11 dxgi d3dcompiler bcrypt version dwmapi)
 
+# Test builds only (tests/run_harness.ps1 builds into build/harness-mod): swaps the menu password
+# hash so the harness can reach the item window without the real password. Never set it for a
+# build that goes to players.
+set(DS3_HARNESS_PASSWORD_SHA256 "" CACHE STRING "Test builds only: SHA-256 of a test menu password")
+if(DS3_HARNESS_PASSWORD_SHA256)
+    message(WARNING "DS3_HARNESS_PASSWORD_SHA256 is set: this dinput8.dll is a TEST build with a test password.")
+    target_compile_definitions(dinput8 PRIVATE DS3_HARNESS_PASSWORD_SHA256="${DS3_HARNESS_PASSWORD_SHA256}")
+endif()
+
 if(MSVC)
     target_compile_options(imgui PRIVATE /utf-8)
     target_compile_options(dinput8 PRIVATE /utf-8 /W3)

@@ -34,4 +34,16 @@ bool GiveItem(uint32_t itemId, uint32_t quantity, std::string& error);
 // an area when Seamless Co-op leaves a boss stuck.
 bool QuitToMenu(std::string& error);
 
+// Id of the last bonfire the local player rested at (e.g. 4002950 = Firelink Shrine), or -1 when
+// it cannot be read (wrong version, title screen, never rested).
+int LastBonfire();
+
+// English name of a bonfire id ("Firelink Shrine"), or nullptr when the id is not in the list.
+const char* BonfireName(int bonfireId);
+
+// Warps the local player to LastBonfire(), like a Homeward Bone. It calls the same game function
+// the bonfire "Travel" menu calls, so Seamless Co-op sees it as a normal bonfire travel (it hooks
+// that path). Only the local player moves, unless Seamless itself pulls the guests along.
+bool WarpToLastBonfire(std::string& error);
+
 }  // namespace game

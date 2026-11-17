@@ -8,6 +8,7 @@ Mod para **Dark Souls III 1.15.2** feito para jogar junto com o Seamless Co-op d
 - Busca em todas as categorias de uma vez.
 - Enquanto o menu está aberto, o personagem não recebe teclado nem mouse.
 - Botão **Sair para o menu**, que volta para a tela de título na hora. Serve para destravar boss bugado do Seamless (veja [Boss travado](#boss-travado)). Ele aparece também na tela da senha, então qualquer um do grupo pode usar.
+- Botão **Voltar para a fogueira**, o mesmo que um Homeward Bone, que o jogo não deixa usar em coop. Também aparece na tela da senha (veja [Voltar para a fogueira](#voltar-para-a-fogueira)).
 
 - **Launcher para o grupo:** ele baixa sozinho a versão mais nova do mod, então todo mundo joga sempre na mesma versão.
 
@@ -60,6 +61,17 @@ Os itens só chegam quando um personagem está carregado (não funciona na tela 
 Às vezes, quando todo mundo morre no mesmo ataque, o Seamless Co-op perde a sincronia da luta: depois da névoa o boss fica parado, sem barra de vida, e a luta não começa (já aconteceu na Árvore, a Curse-rotted Greatwood). O bug é do Seamless e não dá para corrigir por fora.
 
 Para destravar, quem está hospedando aperta **Insert → Sair para o menu → Sair** e carrega o personagem de novo, e a área volta ao normal. Se ainda assim não resolver, todo mundo sai da sessão, o host descansa numa fogueira e cria a sessão de novo. É o mesmo que "Sair do jogo" no menu do DS3: o progresso fica salvo.
+
+### Voltar para a fogueira
+
+O DS3 não deixa usar o Homeward Bone enquanto tem outro jogador no seu mundo, e no Seamless Co-op sempre tem. Por isso o osso não funciona para ninguém em coop.
+
+**Insert → Voltar para a fogueira → Voltar** leva você para a última fogueira em que descansou (a janela mostra o nome dela). Não precisa de senha. Por dentro, o mod faz a mesma viagem do menu "Viajar" da fogueira, com a animação de viagem e a tela de carregamento, então o Seamless Co-op enxerga uma viagem normal pela fogueira.
+
+- Em coop, o host aperta primeiro. Se o Seamless levar o grupo junto, pronto. Se não levar, cada um aperta o seu botão: cada jogador vai para a própria última fogueira, que é a mesma do host quando vocês descansaram juntos.
+- Não use no meio de luta de boss: o Seamless já perde a sincronia do boss com facilidade.
+- Depois de apertar, o botão espera 15 segundos antes de aceitar outro clique, para não pedir duas viagens seguidas.
+- Se não funcionar, o motivo fica anotado no `ds3coopmod.log` (linhas `Bonfire warp`).
 
 ## Vídeo: FPS sem trava e tela cheia sem borda
 
@@ -133,13 +145,15 @@ powershell -ExecutionPolicy Bypass -File tests\test_launcher.ps1
 
 ### Testar sem abrir o jogo
 
-`tests/harness.cpp` é um programa D3D11 que se chama `DarkSoulsIII.exe` só para o mod carregar nele. Ele aperta Insert, digita a senha, clica no menu e salva prints em `build\harness\`:
+`tests/harness.cpp` é um programa D3D11 que se chama `DarkSoulsIII.exe` só para o mod carregar nele. Ele aperta Insert, clica em **Voltar para a fogueira** na tela da senha, digita a senha, clica no menu de itens (inclusive nos botões do rodapé) e salva prints em `build\harness\`:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Password "<senha>"
+powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1
 ```
 
-Dar itens não funciona no teste: o mod recusa porque o programa não é o jogo 1.15.2. Esse é o comportamento esperado.
+Sem `-Password`, o teste compila uma cópia separada do mod, em `build\harness-mod`, com uma senha de teste. Assim ele chega na tela de itens sem saber a senha de verdade. Essa cópia é só para o teste, nunca distribua ela. O `build\dinput8.dll` normal continua com a senha de verdade. Para testar a dll normal: `tests\run_harness.ps1 -Password "<senha>"`.
+
+Dar itens, Voltar para a fogueira e Sair para o menu não funcionam no teste: o mod recusa porque o programa não é o jogo 1.15.2. Esse é o comportamento esperado, e o teste confere a recusa no `ds3coopmod.log`.
 
 ### Trocar a senha
 
@@ -157,7 +171,7 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 |---|---|
 | `src/dllmain.cpp` | O jogo carrega o `dinput8.dll` da própria pasta. Repassamos o `DirectInput8Create` para o `dinput8.dll` original do Windows e iniciamos o mod numa thread separada (só dentro do `DarkSoulsIII.exe`). |
 | `src/hooks.cpp` | Hook em `IDXGISwapChain::Present` para desenhar o menu com Dear ImGui, hook na janela para o Insert e o mouse, hooks em `SetCursorPos`/`ClipCursor` para o jogo não prender o cursor, e hook no DirectInput para o jogo não receber teclado e mouse com o menu aberto (o movimento do mouse vai para o cursor do menu). |
-| `src/game.cpp` | Endereços do jogo 1.15.2, leitura das tabelas de itens (params) e a chamada da função do jogo que entrega itens. Toda leitura de memória é conferida antes, e o mod se desliga se o exe não for a versão 1.15.2. |
+| `src/game.cpp` | Endereços do jogo 1.15.2, leitura das tabelas de itens (params) e as chamadas das funções do jogo que entregam itens e fazem a viagem pela fogueira (`Lua_Warp`, a mesma do menu "Viajar", com a última fogueira em `GameMan+0xACC`). Toda leitura de memória é conferida antes, e o mod se desliga se o exe não for a versão 1.15.2. |
 | `src/menu.cpp` | Telas de senha e de itens. |
 | `src/video.cpp` | FPS sem trava (limitador de depuração do `SprjFlipper`), correção da corrida e tela cheia sem borda (hooks em `SetWindowLongW`/`SetWindowLongPtrW`/`SetWindowPos`). Lê o `ds3coopmod.ini`. |
 | `src/items_data.inc` | Lista de itens gerada por `tools/gen_items.ps1` a partir de `data/item_ids.json`. |
@@ -173,6 +187,7 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 ## Créditos e licença
 
 - Endereços do jogo e lista de itens: [veeenu/darksoulsiii-practice-tool](https://github.com/veeenu/darksoulsiii-practice-tool) (AGPL-3.0).
+- Viagem para a fogueira (endereços da função `Lua_Warp`, do `GameMan`, do `SprjLuaEventMan` e a lista de fogueiras): script "BonfireWarp" de inuNorii na [cheat table da The Grand Archives](https://github.com/The-Grand-Archives/Dark-Souls-III-CT-TGA), conferido no exe 1.15.2.
 - Técnica do FPS sem trava, da correção da corrida e do modo sem borda: [0dm/DS3DebugFPS](https://github.com/0dm/ds3debugfps) (Apache-2.0), reimplementada em `src/video.cpp`.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT) e [MinHook](https://github.com/TsudaKageyu/minhook) (BSD-2-Clause), em `third_party/` com as licenças originais.
 - Seamless Co-op é do LukeYui e não faz parte deste repositório.
