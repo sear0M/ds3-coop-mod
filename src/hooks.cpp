@@ -13,6 +13,7 @@
 #include <unordered_map>
 
 #include "MinHook.h"
+#include "gamepad.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
@@ -289,6 +290,8 @@ void RenderMenu(IDXGISwapChain* swapChain) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ApplyVirtualMouse(io);
+    gamepad::FeedImGui(io, menu::PadMode());
+    io.MouseDrawCursor = !menu::PadMode();  // with the controller the highlight is the cursor
     ImGui::NewFrame();
     menu::Render();
     ImGui::Render();
@@ -333,6 +336,8 @@ HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* swapChain, UINT syncInterv
             // Only draw on the game's own window (ignore other swap chains, e.g. overlays).
             if (swapChain == g_swapChain || (SUCCEEDED(swapChain->GetDesc(&desc)) && desc.OutputWindow == g_window)) {
                 video::OnPresent(swapChain);
+                gamepad::Update();
+                if (gamepad::TakeMenuToggle()) menu::Toggle(true);  // L3
                 RenderMenu(swapChain);
             }
         }
@@ -518,6 +523,9 @@ bool EnsureMinHook() {
 
 bool InstallRenderHooks() {
     if (!EnsureMinHook()) return false;
+    // Controller: L3 opens the menu, and the game does not see the controller while it is open.
+    // Before the Present hook, which calls gamepad::Update().
+    gamepad::Init();
     void* present = nullptr;
     void* resizeBuffers = nullptr;
     if (!GetSwapChainVtable(present, resizeBuffers)) return false;

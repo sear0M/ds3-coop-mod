@@ -8,7 +8,9 @@
 #include <string>
 
 #include "game.h"
+#include "gamepad.h"
 #include "imgui.h"
+#include "imgui_internal.h"  // SetFocusID, ClearActiveID
 #include "items.h"
 #include "log.h"
 #include "password.h"
@@ -27,6 +29,14 @@ bool g_focusPassword = false;
 bool g_wrongPassword = false;
 int g_failedAttempts = 0;
 ULONGLONG g_lockedUntil = 0;
+
+// Controller mode: the menu was opened with L3, or a controller button was pressed in it. The
+// password is typed on the on-screen keyboard and the D-pad moves between buttons.
+bool g_padMode = false;
+bool g_focusKeyboard = false;  // put the controller cursor on the keyboard's Q this frame
+bool g_focusItems = false;     // put it on the first category this frame
+bool g_shift = false;          // next letter in upper case
+bool g_popupWasOpen = false;   // a popup or list was open at the end of the last frame
 
 // Item window state
 int g_category = 0;
@@ -168,7 +178,11 @@ int ConfirmPopup(const char* id, const std::string& text, const char* note, cons
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancelar", ImVec2(width, 0.0f))) ImGui::CloseCurrentPopup();
+        // The controller cursor starts on "Cancelar", so pressing A twice does not confirm by
+        // accident. B also cancels.
+        if (ImGui::Button("Cancelar", ImVec2(width, 0.0f)) || gamepad::Pressed(XINPUT_GAMEPAD_B))
+            ImGui::CloseCurrentPopup();
+        ImGui::SetItemDefaultFocus();
         ImGui::EndPopup();
     }
     return result;
@@ -257,11 +271,112 @@ void RenderCategory(const items::Category& category, const char* filter, bool sh
     }
 }
 
+// On-screen keyboard for typing the password with a controller (the mouse works too). Every row
+// has the same 10 columns, so the D-pad moves straight up and down.
+const char* const kKeyRows[] = {"1234567890", "qwertyuiop", "asdfghjkl_", "zxcvbnm,.-", "!@#$%&*?+="};
+constexpr int kKeyRowCount = static_cast<int>(sizeof(kKeyRows) / sizeof(kKeyRows[0]));
+constexpr int kKeyCols = 10;
+
+float KeySize() { return ImGui::GetFrameHeight() * 1.45f; }
+
+float KeyboardWidth() { return kKeyCols * KeySize() + (kKeyCols - 1) * ImGui::GetStyle().ItemSpacing.x; }
+
+void TypeChar(char c) {
+    const size_t n = std::strlen(g_passwordBuf);
+    if (n + 1 < sizeof(g_passwordBuf)) {
+        g_passwordBuf[n] = c;
+        g_passwordBuf[n + 1] = 0;
+    }
+    g_wrongPassword = false;
+}
+
+void Backspace() {
+    const size_t n = std::strlen(g_passwordBuf);
+    if (n) g_passwordBuf[n - 1] = 0;
+}
+
+// Draws the keyboard. Returns true when the player asks to enter the password.
+bool VirtualKeyboard() {
+    const float key = KeySize();
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    for (int r = 0; r < kKeyRowCount; ++r) {
+        for (int c = 0; c < kKeyCols; ++c) {
+            if (c > 0) ImGui::SameLine(0.0f, gap);
+            char ch = kKeyRows[r][c];
+            const bool letter = ch >= 'a' && ch <= 'z';
+            if (letter && g_shift) ch = static_cast<char>(ch - 'a' + 'A');
+            // Letters keep their ID ("###k") when Shift changes the label, or the controller cursor
+            // would lose its place. Other keys never change ("#" could not use "###" anyway).
+            char label[8] = {ch, 0};
+            if (letter) std::snprintf(label, sizeof(label), "%c###k", ch);
+            ImGui::PushID(r * kKeyCols + c);
+            if (ImGui::Button(label, ImVec2(key, key))) {
+                TypeChar(ch);
+                if (letter) g_shift = false;  // like a phone: Shift is for one letter
+            }
+            if (r == 1 && c == 0) {  // the cursor starts on Q
+                ImGui::SetItemDefaultFocus();  // when the window appears
+                if (g_focusKeyboard) {         // when switching to the controller later
+                    ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                    ImGui::SetNavCursorVisible(true);
+                    g_focusKeyboard = false;
+                }
+            }
+            ImGui::PopID();
+        }
+    }
+    auto wide = [&](int columns) { return ImVec2(columns * key + (columns - 1) * gap, key); };
+    bool submit = false;
+    if (g_shift) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    const bool shiftClicked = ImGui::Button("Maiúsc.", wide(3));
+    if (g_shift) ImGui::PopStyleColor();
+    if (shiftClicked) g_shift = !g_shift;
+    ImGui::SameLine(0.0f, gap);
+    if (ImGui::Button("Espaço", wide(3))) TypeChar(' ');
+    ImGui::SameLine(0.0f, gap);
+    if (ImGui::Button("Apagar", wide(2))) Backspace();
+    ImGui::SameLine(0.0f, gap);
+    if (ImGui::Button("Entrar", wide(2))) submit = true;
+
+    // Controller shortcuts, unless a confirmation popup has the controller.
+    if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        if (gamepad::Pressed(XINPUT_GAMEPAD_X)) Backspace();
+        if (gamepad::Pressed(XINPUT_GAMEPAD_Y)) g_shift = !g_shift;
+        if (gamepad::Pressed(XINPUT_GAMEPAD_START)) submit = true;
+    }
+    ImGui::Spacing();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(kDim, "A digita · X apaga · Y maiúscula · Start entra · B ou L3 fecha");
+    ImGui::PopTextWrapPos();
+    return submit;
+}
+
+void SubmitPassword(ULONGLONG now) {
+    if (password::Check(g_passwordBuf)) {
+        g_unlocked = true;
+        g_wrongPassword = false;
+        g_failedAttempts = 0;
+        g_screen = Screen::Items;
+        g_focusItems = g_padMode;
+        LOG("Menu unlocked");
+    } else {
+        g_wrongPassword = true;
+        g_focusPassword = !g_padMode;  // with the controller the cursor stays on the keyboard
+        if (++g_failedAttempts >= 5) {
+            g_lockedUntil = now + 30000;
+            g_failedAttempts = 0;
+        }
+    }
+    g_shift = false;
+    SecureZeroMemory(g_passwordBuf, sizeof(g_passwordBuf));
+}
+
 void RenderPassword() {
     ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Always);
+    const float width = g_padMode ? std::max(420.0f, KeyboardWidth() + ImGui::GetStyle().WindowPadding.x * 2.0f) : 420.0f;
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
     bool open = true;
     ImGui::Begin("Acesso restrito", &open,
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -270,6 +385,18 @@ void RenderPassword() {
     if (now < g_lockedUntil) {
         ImGui::TextColored(kRed, "Muitas tentativas erradas.");
         ImGui::Text("Tente de novo em %llu s.", (g_lockedUntil - now) / 1000 + 1);
+    } else if (g_padMode) {
+        ImGui::TextWrapped("Digite a senha com o controle, no teclado abaixo.");
+        ImGui::Spacing();
+        // The D-pad skips the text box (it cannot type); a mouse click still selects it.
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool enter = ImGui::InputTextWithHint("##senha", "Senha", g_passwordBuf, sizeof(g_passwordBuf),
+                                                    ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopItemFlag();
+        if (g_wrongPassword) ImGui::TextColored(kRed, "Senha incorreta.");
+        ImGui::Spacing();
+        if (VirtualKeyboard() || enter) SubmitPassword(now);
     } else {
         ImGui::TextWrapped("Digite a senha para abrir o menu de itens.");
         ImGui::Spacing();
@@ -282,23 +409,7 @@ void RenderPassword() {
                                                     ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
         if (g_wrongPassword) ImGui::TextColored(kRed, "Senha incorreta.");
         ImGui::Spacing();
-        if (ImGui::Button("Entrar", ImVec2(120.0f, 0.0f)) || enter) {
-            if (password::Check(g_passwordBuf)) {
-                g_unlocked = true;
-                g_wrongPassword = false;
-                g_failedAttempts = 0;
-                g_screen = Screen::Items;
-                LOG("Menu unlocked");
-            } else {
-                g_wrongPassword = true;
-                g_focusPassword = true;
-                if (++g_failedAttempts >= 5) {
-                    g_lockedUntil = now + 30000;
-                    g_failedAttempts = 0;
-                }
-            }
-            SecureZeroMemory(g_passwordBuf, sizeof(g_passwordBuf));
-        }
+        if (ImGui::Button("Entrar", ImVec2(120.0f, 0.0f)) || enter) SubmitPassword(now);
         ImGui::SameLine();
         if (ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f))) open = false;
     }
@@ -335,12 +446,16 @@ void RenderItems() {
         return;
     }
 
-    // Options row
+    // Options row. With the controller the D-pad skips the search box (it cannot type), and the
+    // quantity is a slider: A to grab it, left/right to change, A again to let go.
     ImGui::SetNextItemWidth(280.0f);
+    if (g_padMode) ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
     ImGui::InputTextWithHint("##busca", "Buscar em todas as categorias...", g_search, sizeof(g_search));
+    if (g_padMode) ImGui::PopItemFlag();
     ImGui::SameLine();
     ImGui::SetNextItemWidth(110.0f);
-    if (ImGui::InputInt("Qtd.", &g_quantity)) g_quantity = std::clamp(g_quantity, 1, 99);
+    if (g_padMode) ImGui::SliderInt("Qtd.", &g_quantity, 1, 99);
+    else if (ImGui::InputInt("Qtd.", &g_quantity)) g_quantity = std::clamp(g_quantity, 1, 99);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Quantidade para consumíveis, flechas, almas e melhorias.");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.0f);
@@ -358,19 +473,39 @@ void RenderItems() {
     const float footer =
         ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
 
-    // Category list
-    ImGui::BeginChild("categorias", ImVec2(210.0f, -footer), ImGuiChildFlags_Borders);
-    for (int i = 0; i < static_cast<int>(categories.size()); ++i) {
+    // LB/RB switch category.
+    const int categoryCount = static_cast<int>(categories.size());
+    if (categoryCount > 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        int step = 0;
+        if (gamepad::Pressed(XINPUT_GAMEPAD_LEFT_SHOULDER)) step = -1;
+        if (gamepad::Pressed(XINPUT_GAMEPAD_RIGHT_SHOULDER)) step = 1;
+        if (step) {
+            g_category = (g_category + step + categoryCount) % categoryCount;
+            g_search[0] = 0;
+        }
+    }
+
+    // Category list. NavFlattened: the D-pad goes straight from this list to the items and back.
+    ImGui::BeginChild("categorias", ImVec2(210.0f, -footer), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+    for (int i = 0; i < categoryCount; ++i) {
         if (ImGui::Selectable(categories[i].name.c_str(), i == g_category && !g_search[0])) {
             g_category = i;
             g_search[0] = 0;
+        }
+        if (i == 0 && g_padMode) {  // controller cursor starts on the first category
+            ImGui::SetItemDefaultFocus();
+            if (g_focusItems) {
+                ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                ImGui::SetNavCursorVisible(true);
+                g_focusItems = false;
+            }
         }
     }
     ImGui::EndChild();
     ImGui::SameLine();
 
     // Items
-    ImGui::BeginChild("itens", ImVec2(0.0f, -footer), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("itens", ImVec2(0.0f, -footer), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     if (g_search[0]) {
         for (const auto& category : categories) RenderCategory(category, g_search, true);
     } else if (g_category >= 0 && g_category < static_cast<int>(categories.size())) {
@@ -393,6 +528,8 @@ void RenderItems() {
         ImGui::TextColored(kRed, "Versão do jogo %s não suportada (precisa ser 1.15.2).", game::VersionText().c_str());
     else if (!game::InGame())
         ImGui::TextColored(kGold, "Fora do jogo: carregue um personagem para receber itens.");
+    else if (g_padMode)
+        ImGui::TextColored(kDim, "A pega o item · LB/RB troca a categoria · B ou L3 fecha.");
     else
         ImGui::TextColored(kDim, "Os itens vão só para o seu inventário.  Insert ou Esc fecha.");
     ImGui::SameLine(right - quitWidth - ImGui::GetStyle().ItemSpacing.x - bonfireWidth);
@@ -412,31 +549,43 @@ void RenderItems() {
 
 }  // namespace
 
-void Toggle() {
+void Toggle(bool fromGamepad) {
     if (g_screen != Screen::Hidden) {
         Close();
         return;
     }
+    g_padMode = fromGamepad;
+    g_shift = false;
+    g_popupWasOpen = false;
     if (g_unlocked) {
+        g_focusItems = fromGamepad;
         g_screen = Screen::Items;
     } else {
         g_wrongPassword = false;
-        g_focusPassword = true;
+        g_focusPassword = !fromGamepad;
+        g_focusKeyboard = fromGamepad;
         g_screen = Screen::Password;
     }
+    if (fromGamepad) LOG("Menu opened with the controller (L3)");
 }
 
 void Close() {
     SecureZeroMemory(g_passwordBuf, sizeof(g_passwordBuf));
     g_screen = Screen::Hidden;
+    g_shift = false;
+    g_popupWasOpen = false;
+    gamepad::OnMenuClosed();  // the button that closed the menu does not reach the game
 }
 
 bool IsOpen() { return g_screen != Screen::Hidden; }
+
+bool PadMode() { return g_padMode; }
 
 void Setup(HWND window) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;  // do not write imgui.ini into the game folder
     io.LogFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // D-pad/stick + A/B, fed by src/gamepad.cpp
 
     RECT rc{};
     GetClientRect(window, &rc);
@@ -480,11 +629,25 @@ void Setup(HWND window) {
 }
 
 void Render() {
+    // A controller button switches the menu to controller mode (on-screen keyboard, D-pad cursor).
+    if (!g_padMode && gamepad::AnyPressed()) {
+        LOG("Menu: controller mode (buttons 0x%04X)", gamepad::Buttons());
+        g_padMode = true;
+        g_focusKeyboard = g_screen == Screen::Password;
+        g_focusItems = g_screen == Screen::Items && ImGui::GetFocusID() == 0;
+        ImGui::ClearActiveID();  // stop typing in the password box, the D-pad cannot leave it
+    }
+    // B closes the menu, unless a list or popup is open (B closes that first).
+    if (gamepad::Pressed(XINPUT_GAMEPAD_B) && !g_popupWasOpen) {
+        Close();
+        return;
+    }
     switch (g_screen.load()) {
         case Screen::Password: RenderPassword(); break;
         case Screen::Items: RenderItems(); break;
         default: break;
     }
+    g_popupWasOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
 }  // namespace menu

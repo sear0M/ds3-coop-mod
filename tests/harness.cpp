@@ -1,8 +1,9 @@
 // Test harness: a tiny D3D11 app that pretends to be DarkSoulsIII.exe so the mod (dinput8.dll)
 // loads into it. It opens the menu with Insert, types the password, clicks around and saves
-// screenshots of what the mod drew. No game is needed; game-specific features (giving items,
-// "Voltar para a fogueira", "Sair para o menu") correctly refuse to run because the harness is
-// not version 1.15.2.
+// screenshots of what the mod drew. With "pad" it does the same with a simulated controller
+// (L3, on-screen keyboard) and checks what the game gets from the controller. No game is needed;
+// game-specific features (giving items, "Voltar para a fogueira", "Sair para o menu") correctly
+// refuse to run because the harness is not version 1.15.2.
 //
 // Build + run: powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1
 
@@ -11,8 +12,11 @@
 
 #include <d3d11.h>
 #include <dinput.h>
+#include <xinput.h>
 
 #include <cstdio>
+#include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -94,8 +98,44 @@ void Click(HWND hwnd, int x, int y) {
 
 struct Step {
     double at;  // seconds after start
-    void (*run)(HWND);
+    std::function<void(HWND)> run;
 };
+
+// --- Controller ("pad" mode) ---------------------------------------------------------------
+// When DS3COOPMOD_TEST_PAD names a shared memory block (run_harness.ps1 sets it), the mod reads
+// controller 0 from it instead of XInput. The harness writes the buttons there, and checks what
+// the "game" gets by calling xinput1_3!XInputGetState, the function DS3 uses and the mod hooks.
+volatile XINPUT_STATE* g_pad = nullptr;
+using XInputGetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+XInputGetStateFn g_gameGetState = nullptr;
+
+bool OpenTestPad() {
+    wchar_t name[128] = {};
+    if (!GetEnvironmentVariableW(L"DS3COOPMOD_TEST_PAD", name, 128)) return false;
+    HANDLE map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(XINPUT_STATE), name);
+    if (!map) return false;
+    g_pad = static_cast<volatile XINPUT_STATE*>(MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(XINPUT_STATE)));
+    HMODULE xinput = LoadLibraryW(L"xinput1_3.dll");
+    g_gameGetState = xinput ? reinterpret_cast<XInputGetStateFn>(GetProcAddress(xinput, "XInputGetState")) : nullptr;
+    return g_pad && g_gameGetState;
+}
+
+void Pad(WORD buttons, SHORT leftStickX = 0) {
+    g_pad->Gamepad.wButtons = buttons;
+    g_pad->Gamepad.sThumbLX = leftStickX;
+    g_pad->dwPacketNumber = g_pad->dwPacketNumber + 1;
+}
+
+// Prints "PAD OK"/"PAD FALHA" for run_harness.ps1.
+void GameSees(const char* what, WORD mask, bool expectDown) {
+    XINPUT_STATE s{};
+    const DWORD r = g_gameGetState(0, &s);
+    const bool down = r == ERROR_SUCCESS && (s.Gamepad.wButtons & mask) != 0;
+    std::printf("PAD %s %s (game buttons=0x%04X)\n", down == expectDown ? "OK   " : "FALHA", what, s.Gamepad.wButtons);
+}
+
+// Same layout as the mod's on-screen keyboard (src/menu.cpp kKeyRows); the cursor starts on Q.
+const char* const kKeyRows[] = {"1234567890", "qwertyuiop", "asdfghjkl_", "zxcvbnm,.-", "!@#$%&*?+="};
 
 // Like the game's window procedure: counts the messages that tell it the window changed size,
 // position or style once the window is set up. DS3 crashed when it handled the ones caused by the
@@ -118,12 +158,18 @@ LRESULT CALLBACK GameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 }  // namespace
 
 int main(int argc, char** argv) {
-    // Arguments: [password] [borderless], in any order (PowerShell 5.1 drops an empty password).
+    // Arguments: [password] [borderless|pad], in any order (PowerShell 5.1 drops an empty password).
     const char* password = "";
     bool borderlessTest = false;
+    bool padTest = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "borderless") borderlessTest = true;
+        else if (std::string(argv[i]) == "pad") padTest = true;
         else password = argv[i];
+    }
+    if (padTest && !OpenTestPad()) {
+        std::printf("pad test: set DS3COOPMOD_TEST_PAD and make sure xinput1_3.dll exists\n");
+        return 1;
     }
 
     WNDCLASSEXW wc{};
@@ -171,7 +217,7 @@ int main(int argc, char** argv) {
     static std::string s_password = password;
     // "borderless" mode: the mod should turn this window into a borderless window covering the
     // monitor while the back buffer stays 1280x720; the menu must still be centered and sized right.
-    const Step borderlessSteps[] = {
+    const std::vector<Step> borderlessSteps = {
         {4.2, [](HWND h) {
              RECT r{};
              GetWindowRect(h, &r);
@@ -187,7 +233,7 @@ int main(int argc, char** argv) {
         {6.0, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
     // Coordinates match the 1280x720 layout seen in the screenshots (01_senha.png, 05_itens.png).
-    const Step menuSteps[] = {
+    const std::vector<Step> menuSteps = {
         {4.0, [](HWND h) { Key(h, VK_INSERT); }},
         {4.6, [](HWND) { SaveBackBuffer("01_senha.bmp"); }},
         // "Voltar para a fogueira" needs no password, so friends use it from this screen.
@@ -218,8 +264,84 @@ int main(int argc, char** argv) {
         {14.1, [](HWND) { SaveBackBuffer("12_fechado.bmp"); }},
         {14.3, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); }},
     };
-    const Step* steps = borderlessTest ? borderlessSteps : menuSteps;
-    const size_t stepCount = borderlessTest ? sizeof(borderlessSteps) / sizeof(Step) : sizeof(menuSteps) / sizeof(Step);
+    // "pad" mode: the same menu driven only by a controller, opened with L3, the password typed on
+    // the on-screen keyboard. It also checks what the game gets from the controller.
+    std::vector<Step> padSteps;
+    double t = 3.8;
+    auto add = [&](double delay, std::function<void(HWND)> run) {
+        t += delay;
+        padSteps.push_back({t, std::move(run)});
+    };
+    auto tap = [&](WORD button) {
+        add(0.0, [button](HWND) { Pad(button); });
+        add(0.08, [](HWND) { Pad(0); });
+        t += 0.08;
+    };
+    if (padTest) {
+        constexpr WORD kRB = XINPUT_GAMEPAD_RIGHT_SHOULDER, kL3 = XINPUT_GAMEPAD_LEFT_THUMB, kB = XINPUT_GAMEPAD_B;
+        add(0.0, [](HWND) { GameSees("no buttons held", 0xFFFF, false); });
+        // Menu closed: the game gets the controller.
+        add(0.2, [](HWND) { Pad(kRB); });
+        add(0.15, [](HWND) { GameSees("menu closed: the game gets RB", kRB, true); });
+        add(0.05, [](HWND) { Pad(0); });
+        // Running (stick pushed) + L3 is the jump: no menu, the game gets L3.
+        add(0.2, [](HWND) { Pad(kL3, 30000); });
+        add(0.15, [](HWND) { GameSees("running + L3: the game gets the jump", kL3, true); });
+        add(0.05, [](HWND) { Pad(0); });
+        add(0.4, [](HWND) { SaveBackBuffer("p01_l3_correndo.bmp"); });  // no menu
+        // Standing still + L3 opens the menu, and the game does not get that L3.
+        add(0.2, [](HWND) { Pad(kL3); });
+        add(0.15, [](HWND) { GameSees("standing + L3: the game does not get it", kL3, false); });
+        add(0.05, [](HWND) { Pad(0); });
+        add(0.5, [](HWND) { SaveBackBuffer("p02_teclado.bmp"); });
+        // Menu open: the game gets nothing.
+        add(0.2, [](HWND) { Pad(kRB); });
+        add(0.15, [](HWND) { GameSees("menu open: the game gets nothing", 0xFFFF, false); });
+        add(0.05, [](HWND) { Pad(0); });
+        // Type the password: D-pad to each key, A to press it, Y for an upper case letter.
+        t += 0.2;
+        int row = 1, col = 0;
+        for (const char* p = s_password.c_str(); *p; ++p) {
+            char ch = *p;
+            if (ch >= 'A' && ch <= 'Z') {
+                tap(XINPUT_GAMEPAD_Y);
+                ch = static_cast<char>(ch - 'A' + 'a');
+            }
+            int r = -1, c = -1;
+            for (int i = 0; i < 5 && r < 0; ++i)
+                if (const char* f = std::strchr(kKeyRows[i], ch)) r = i, c = static_cast<int>(f - kKeyRows[i]);
+            if (r < 0) {
+                std::printf("pad test: '%c' is not on the on-screen keyboard\n", ch);
+                continue;
+            }
+            for (; row < r; ++row) tap(XINPUT_GAMEPAD_DPAD_DOWN);
+            for (; row > r; --row) tap(XINPUT_GAMEPAD_DPAD_UP);
+            for (; col < c; ++col) tap(XINPUT_GAMEPAD_DPAD_RIGHT);
+            for (; col > c; --col) tap(XINPUT_GAMEPAD_DPAD_LEFT);
+            tap(XINPUT_GAMEPAD_A);
+        }
+        add(0.3, [](HWND) { SaveBackBuffer("p03_senha_digitada.bmp"); });
+        tap(XINPUT_GAMEPAD_START);
+        add(0.5, [](HWND) { SaveBackBuffer("p04_itens.bmp"); });
+        tap(kRB);  // next category
+        add(0.4, [](HWND) { SaveBackBuffer("p05_categoria.bmp"); });
+        tap(XINPUT_GAMEPAD_DPAD_RIGHT);  // into the item list
+        tap(XINPUT_GAMEPAD_DPAD_DOWN);
+        tap(XINPUT_GAMEPAD_A);  // give it (refused: not the real game)
+        add(0.4, [](HWND) { SaveBackBuffer("p06_dar_item.bmp"); });
+        // B closes the menu. While it is still held the game must not get it (B is roll).
+        add(0.2, [](HWND) { Pad(kB); });
+        add(0.2, [](HWND) { GameSees("B that closed the menu: the game does not get it", kB, false); });
+        add(0.05, [](HWND) { SaveBackBuffer("p07_fechado.bmp"); });
+        add(0.1, [](HWND) { Pad(0); });
+        add(0.2, [](HWND) { Pad(kB); });
+        add(0.15, [](HWND) { GameSees("next B: the game gets it again", kB, true); });
+        add(0.05, [](HWND) { Pad(0); });
+        add(0.3, [](HWND h) { PostMessageW(h, WM_CLOSE, 0, 0); });
+    }
+    const std::vector<Step>& steps = padTest ? padSteps : (borderlessTest ? borderlessSteps : menuSteps);
+    const size_t stepCount = steps.size();
+    const double endAt = steps.empty() ? 17.0 : steps.back().at + 3.0;
     size_t next = 0;
 
     g_countResize = true;
@@ -239,8 +361,12 @@ int main(int argc, char** argv) {
         g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
         g_context->ClearRenderTargetView(g_rtv, color);
         g_swapChain->Present(1, 0);
+        if (padTest) {  // like DS3, read the controller every frame
+            XINPUT_STATE frameState{};
+            g_gameGetState(0, &frameState);
+        }
         while (next < stepCount && t >= steps[next].at) steps[next++].run(hwnd);
-        if (t > 17.0) break;
+        if (t > endAt) break;
     }
     std::printf("done\n");
     return 0;

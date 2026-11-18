@@ -30,11 +30,15 @@ add_library(imgui STATIC
     third_party/imgui/backends/imgui_impl_win32.cpp)
 target_include_directories(imgui PUBLIC third_party/imgui third_party/imgui/backends)
 target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS UNICODE _UNICODE)
+# src/gamepad.cpp feeds the controller to ImGui itself (only some buttons, and from the game's
+# xinput1_3), so the Win32 backend must not read it too.
+target_compile_definitions(imgui PRIVATE IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
 
 # --- The mod: dinput8.dll --------------------------------------------------------------------
 add_library(dinput8 SHARED
     src/dllmain.cpp
     src/game.cpp
+    src/gamepad.cpp
     src/hooks.cpp
     src/items.cpp
     src/log.cpp

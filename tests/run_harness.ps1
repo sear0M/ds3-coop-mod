@@ -1,10 +1,11 @@
 # Builds the mod and the test harness, runs the harness with the mod loaded and converts the
 # screenshots to PNG in build\harness\.
 #   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1
-#     (menu test; without -Password it uses a test build of the mod with a test password, so it
-#      still reaches the item window. That test build lives in build\harness-mod, never ship it.)
+#     (menu test with the mouse and keyboard, then with a simulated controller. Without -Password
+#      it uses a test build of the mod with a test password, so it still reaches the item window.
+#      That test build lives in build\harness-mod, never ship it.)
 #   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Password "<senha>"
-#     (menu test with the real build\dinput8.dll and the real password)
+#     (mouse and keyboard menu test with the real build\dinput8.dll and the real password)
 #   powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1 -Borderless
 #     (the test window covers the screen for ~6 seconds, twice)
 param([string]$Password = '', [switch]$Borderless)
@@ -17,9 +18,12 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release | Out-Null
 cmake --build build
 if ($LASTEXITCODE -ne 0) { throw 'mod build failed' }
 $dll = 'build\dinput8.dll'
+$testBuild = $false
 
 if (-not $Borderless -and -not $Password) {
-    $Password = 'teste-do-harness'
+    # Upper case, digit and symbol: the controller test types it on the on-screen keyboard.
+    $Password = 'Coop-3'
+    $testBuild = $true
     $sha = [Security.Cryptography.SHA256]::Create()
     $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Password)) | ForEach-Object { $_.ToString('x2') })
     # The configure prints a CMake warning on purpose (this dll has the test password). PowerShell
@@ -50,6 +54,9 @@ function Check([bool]$ok, [string]$what) {
 }
 
 Push-Location $out
+# A real controller on this PC must not press buttons in the middle of the test: the mod reads
+# controller 0 from this (missing) shared memory instead, so it sees no controller at all.
+$env:DS3COOPMOD_TEST_PAD = 'Local\ds3coopmod_no_pad'
 try {
     if ($Borderless) {
         # Crash guard: clear it after 1.5 s instead of 20 s, so it clears before the harness quits.
@@ -81,8 +88,26 @@ try {
         $refused = ([regex]::Matches($log, 'Bonfire warp refused: version')).Count
         Check ($refused -eq 1) "fogueira: refused once outside the real game (got $refused)"
         Check ($log -match 'Menu unlocked') 'menu: the password opened the item window'
+
+        if ($testBuild) {
+            # Same menu with only a controller (it types the test password, so test build only).
+            Copy-Item ds3coopmod.log ds3coopmod_menu.log  # the next run starts a new log
+            $env:DS3COOPMOD_TEST_PAD = 'Local\ds3coopmod_test_pad'
+            $padRun = & .\DarkSoulsIII.exe $Password pad | Out-String
+            Write-Host $padRun
+            $padLog = Get-Content ds3coopmod.log -Raw
+            $ok = ([regex]::Matches($padRun, 'PAD OK')).Count
+            $bad = ([regex]::Matches($padRun, 'PAD FALHA')).Count
+            Check ($ok -eq 7 -and $bad -eq 0) "pad: the game gets the controller only when it should ($ok OK, $bad failed)"
+            Check ($padLog -match 'XInputGetState hooked') 'pad: XInputGetState hooked'
+            Check ($padLog -match 'Menu opened with the controller') 'pad: L3 opened the menu'
+            Check ($padLog -match 'Menu unlocked') 'pad: the password typed on the on-screen keyboard opened the item window'
+        }
     }
-} finally { Pop-Location }
+} finally {
+    Remove-Item Env:\DS3COOPMOD_TEST_PAD -ErrorAction SilentlyContinue
+    Pop-Location
+}
 
 Add-Type -AssemblyName System.Drawing
 Get-ChildItem "$out\*.bmp" | ForEach-Object {

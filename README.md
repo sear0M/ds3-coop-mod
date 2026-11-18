@@ -2,11 +2,11 @@
 
 Mod para **Dark Souls III 1.15.2** feito para jogar junto com o Seamless Co-op do LukeYui (Nexus Mods).
 
-- **Insert abre um menu protegido por senha.** Depois da senha aparece uma tabela de itens separada por categoria (armas, escudos, arcos e bestas, flechas, catalisadores, magias, sets de armadura, anéis, consumíveis, melhorias, almas, itens-chave e mais). Clicar num item coloca ele **só no seu inventário**.
+- **Insert (ou L3 no controle) abre um menu protegido por senha.** Com o controle, a senha é digitada num teclado na tela. Depois da senha aparece uma tabela de itens separada por categoria (armas, escudos, arcos e bestas, flechas, catalisadores, magias, sets de armadura, anéis, consumíveis, melhorias, almas, itens-chave e mais). Clicar num item coloca ele **só no seu inventário**.
 - Armas podem vir com **nível de melhoria (+0 a +10)** e **infusão**. O mod confere nas tabelas do jogo se a combinação existe e corrige sozinho (armas únicas param no +5, armas que não aceitam infusão vêm normais).
 - **Sets de armadura** inteiros com um clique, ou peça por peça.
 - Busca em todas as categorias de uma vez.
-- Enquanto o menu está aberto, o personagem não recebe teclado nem mouse.
+- Enquanto o menu está aberto, o personagem não recebe teclado, mouse nem controle.
 - Botão **Sair para o menu**, que volta para a tela de título na hora. Serve para destravar boss bugado do Seamless (veja [Boss travado](#boss-travado)). Ele aparece também na tela da senha, então qualquer um do grupo pode usar.
 - Botão **Voltar para a fogueira**, o mesmo que um Homeward Bone, que o jogo não deixa usar em coop. Também aparece na tela da senha (veja [Voltar para a fogueira](#voltar-para-a-fogueira)).
 
@@ -51,6 +51,30 @@ O mod escreve um log em `ds3coopmod.log`, na pasta do jogo. Se algo não funcion
 | `Esc` | Fecha o menu |
 
 A senha só é pedida uma vez por vez que o jogo é aberto. Depois de 5 senhas erradas o menu trava por 30 segundos.
+
+### Com o controle
+
+Funciona com controle de Xbox e com qualquer controle que o jogo enxergue como um de Xbox (PlayStation pela Steam ou pelo DS4Windows, por exemplo).
+
+| Botão | O que faz |
+|---|---|
+| `L3` (apertar o analógico esquerdo) **com o personagem parado** | Abre e fecha o menu |
+| Direcional ou analógico esquerdo | Move o cursor (o quadrado azul) |
+| `A` | Aperta o botão ou a tecla do cursor, pega o item |
+| `B` | Fecha a lista aberta, a confirmação ou o menu |
+| `X` | Apaga a última letra da senha |
+| `Y` | Próxima letra maiúscula |
+| `Start` | Entra com a senha |
+| `LB` / `RB` | Categoria anterior / próxima, na tela de itens |
+| Analógico direito | Rola a lista |
+
+- **Por que "parado":** no DS3, L3 correndo é o pulo (para quem deixou o pulo no L3 nas opções). Então o L3 só abre o menu com o analógico esquerdo solto. Correndo, ele continua pulando normalmente.
+- Aberto pelo L3, o menu já mostra o **teclado na tela** com o cursor no `q`. Ande com o direcional até a letra e aperte `A`. A senha aparece como `****`. Termine com `Start` ou com a tecla **Entrar** da tela.
+- Aberto pelo Insert, o menu fica no jeito de sempre (mouse e teclado). Apertar qualquer botão do controle troca para o jeito do controle.
+- Enquanto o menu está aberto, o jogo não recebe nada do controle. O botão que fecha o menu (B ou L3) também não chega no jogo, então o personagem não rola nem pula sem querer.
+- Nas confirmações (Voltar para a fogueira, Sair para o menu), o cursor começa em **Cancelar**. Assim, apertar `A` duas vezes sem querer não confirma.
+- No modo controle a busca da tela de itens fica fora do caminho do cursor (ela precisa de teclado). Use as categorias.
+- Se a senha tiver algum caractere que não está no teclado da tela (acentos, por exemplo), digite pelo teclado do PC.
 
 Com o menu aberto o mouse fica livre: o jogo para de prender o cursor no meio da tela. Se o cursor do Windows mesmo assim não se mexer, o menu desenha um cursor próprio, guiado pelo movimento do mouse que o jogo recebe.
 
@@ -145,13 +169,15 @@ powershell -ExecutionPolicy Bypass -File tests\test_launcher.ps1
 
 ### Testar sem abrir o jogo
 
-`tests/harness.cpp` é um programa D3D11 que se chama `DarkSoulsIII.exe` só para o mod carregar nele. Ele aperta Insert, clica em **Voltar para a fogueira** na tela da senha, digita a senha, clica no menu de itens (inclusive nos botões do rodapé) e salva prints em `build\harness\`:
+`tests/harness.cpp` é um programa D3D11 que se chama `DarkSoulsIII.exe` só para o mod carregar nele. Ele aperta Insert, clica em **Voltar para a fogueira** na tela da senha, digita a senha, clica no menu de itens (inclusive nos botões do rodapé) e salva prints em `build\harness\`. Depois faz tudo de novo só com um controle simulado: L3 correndo (não abre), L3 parado (abre), senha digitada no teclado da tela, LB/RB e A nos itens, B para fechar. E confere o que o "jogo" recebe do controle em cada momento (prints `p01`...`p07`):
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tests\run_harness.ps1
 ```
 
-Sem `-Password`, o teste compila uma cópia separada do mod, em `build\harness-mod`, com uma senha de teste. Assim ele chega na tela de itens sem saber a senha de verdade. Essa cópia é só para o teste, nunca distribua ela. O `build\dinput8.dll` normal continua com a senha de verdade. Para testar a dll normal: `tests\run_harness.ps1 -Password "<senha>"`.
+Sem `-Password`, o teste compila uma cópia separada do mod, em `build\harness-mod`, com uma senha de teste. Assim ele chega na tela de itens sem saber a senha de verdade. Essa cópia é só para o teste, nunca distribua ela. O `build\dinput8.dll` normal continua com a senha de verdade. Para testar a dll normal: `tests\run_harness.ps1 -Password "<senha>"` (só a parte de mouse e teclado).
+
+O controle simulado vem de uma memória compartilhada que o teste cria (variável de ambiente `DS3COOPMOD_TEST_PAD`). Durante o teste, um controle de verdade ligado no PC é ignorado, para um botão apertado sem querer não estragar o resultado.
 
 Dar itens, Voltar para a fogueira e Sair para o menu não funcionam no teste: o mod recusa porque o programa não é o jogo 1.15.2. Esse é o comportamento esperado, e o teste confere a recusa no `ds3coopmod.log`.
 
@@ -172,7 +198,8 @@ Isso só impede alguém de abrir o menu sem saber a senha. Se o repositório for
 | `src/dllmain.cpp` | O jogo carrega o `dinput8.dll` da própria pasta. Repassamos o `DirectInput8Create` para o `dinput8.dll` original do Windows e iniciamos o mod numa thread separada (só dentro do `DarkSoulsIII.exe`). |
 | `src/hooks.cpp` | Hook em `IDXGISwapChain::Present` para desenhar o menu com Dear ImGui, hook na janela para o Insert e o mouse, hooks em `SetCursorPos`/`ClipCursor` para o jogo não prender o cursor, e hook no DirectInput para o jogo não receber teclado e mouse com o menu aberto (o movimento do mouse vai para o cursor do menu). |
 | `src/game.cpp` | Endereços do jogo 1.15.2, leitura das tabelas de itens (params) e as chamadas das funções do jogo que entregam itens e fazem a viagem pela fogueira (`Lua_Warp`, a mesma do menu "Viajar", com a última fogueira em `GameMan+0xACC`). Toda leitura de memória é conferida antes, e o mod se desliga se o exe não for a versão 1.15.2. |
-| `src/menu.cpp` | Telas de senha e de itens. |
+| `src/gamepad.cpp` | Controle: hook no `XInputGetState` do `xinput1_3.dll` (o que o DS3 usa) para o jogo não receber o controle com o menu aberto, leitura do controle para o L3 e para navegar no menu. |
+| `src/menu.cpp` | Telas de senha (com o teclado na tela para o controle) e de itens. |
 | `src/video.cpp` | FPS sem trava (limitador de depuração do `SprjFlipper`), correção da corrida e tela cheia sem borda (hooks em `SetWindowLongW`/`SetWindowLongPtrW`/`SetWindowPos`). Lê o `ds3coopmod.ini`. |
 | `src/items_data.inc` | Lista de itens gerada por `tools/gen_items.ps1` a partir de `data/item_ids.json`. |
 | `launcher/main.cpp` | O launcher: lê o `manifest.txt` da última release, compara os hashes, baixa o que mudou (inclusive ele mesmo), aplica o `seamless_overrides.ini` e abre o jogo. A janela é desenhada com GDI+ nas cores do Dark Souls III. |
