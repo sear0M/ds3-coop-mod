@@ -15,7 +15,7 @@ namespace {
 // Test build from tests/run_harness.ps1 (see CMakeLists.txt), never shipped.
 constexpr const char* kPasswordSha256 = DS3_HARNESS_PASSWORD_SHA256;
 #else
-constexpr const char* kPasswordSha256 = "d7ff1abfe9621fb0924da85f3cc4863ad47329b3dfde8ada62ea889747168e9b";
+constexpr const char* kPasswordSha256 = "dd8b80152c4c842ba2a2ebf5dd827fb36a522778607ef98ef1ab1c7e947ca54c";
 #endif
 
 bool Sha256Hex(const std::string& input, char out[65]) {
